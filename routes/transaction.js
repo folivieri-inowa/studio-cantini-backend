@@ -228,21 +228,43 @@ const transaction = async (fastify) => {
   });
 
   fastify.post('/edit/multi', { preHandler: fastify.authenticate }, async (request, reply) => {
-    const { db, category, subject, details, transactions, status } = request.body;
+    const { db, category, subject, details, transactions, status, paymentType } = request.body;
 
     try {
       for (const t of transactions) {
         let query;
         let values;
+
+        const isPaymentTypeValid = paymentType !== null && paymentType !== '';
+
         if (!category) {
           query = `
           UPDATE transactions
           SET status = $1
-          WHERE id = $2 AND db = $3
+          ${isPaymentTypeValid ? ', paymenttype = $2' : ''}
+          WHERE id = $${isPaymentTypeValid ? '3' : '2'} AND db = $${isPaymentTypeValid ? '4' : '3'}
           RETURNING *;
         `;
-          values = [status, t, db];
-        }else{
+          values = isPaymentTypeValid ? [status, paymentType, t, db] : [status, t, db];
+        } else {
+          query = `
+          UPDATE transactions
+          SET categoryid = $1, 
+              subjectid = $2, 
+              detailid = $3, 
+              status = $4
+          ${isPaymentTypeValid ? ', paymenttype = $5' : ''}
+          WHERE id = $${isPaymentTypeValid ? '6' : '5'} AND db = $${isPaymentTypeValid ? '7' : '6'}
+          RETURNING *;
+        `;
+          values = isPaymentTypeValid ? [category, subject, details, status, paymentType, t, db] : [category, subject, details, status, t, db];
+        }
+
+        // Esegui la query solo se paymentType è valido o non è incluso nella query
+        if (isPaymentTypeValid || !query.includes('paymenttype')) {
+          await fastify.pg.query(query, values);
+        } else {
+          // Se paymentType non è valido, aggiorna solo gli altri campi
           query = `
           UPDATE transactions
           SET categoryid = $1, 
@@ -253,9 +275,8 @@ const transaction = async (fastify) => {
           RETURNING *;
         `;
           values = [category, subject, details, status, t, db];
+          await fastify.pg.query(query, values);
         }
-
-        await fastify.pg.query(query, values);
       }
 
       reply.send({ message: 'Record aggiornati con successo', status: 200 });
