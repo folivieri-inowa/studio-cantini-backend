@@ -544,8 +544,8 @@ const transaction = async (fastify) => {
       const bufferedFile = await file.toBuffer();
       console.log('✅ File ricevuto!');
 
-      const { db, id } = JSON.parse(file.fields.metadata.value);
-      console.log('📊 Metadata ricevuti:', { db, id });
+      const { db, id, commissions } = JSON.parse(file.fields.metadata.value);
+      console.log('📊 Metadata ricevuti:', { db, id, commissions });
 
       const excelToJson = ConvertExcelToJson(bufferedFile);
       console.log('📋 Dati estratti dal file:', excelToJson);
@@ -557,7 +557,7 @@ const transaction = async (fastify) => {
 
       // 1️⃣ Recupera la data del record originale
       const { rows: selectRows } = await fastify.pg.query(`
-            SELECT id, ownerid, categoryid, subjectid, detailid,  TO_CHAR(date, 'YYYY-MM-DD') AS date FROM transactions 
+            SELECT id, amount, ownerid, categoryid, subjectid, detailid,  TO_CHAR(date, 'YYYY-MM-DD') AS date FROM transactions 
             WHERE id = $1 AND db = $2
         `, [id, db]);
 
@@ -571,6 +571,32 @@ const transaction = async (fastify) => {
       const originalDate = selectRows[0].date;
       console.log('📅 Data originale recuperata:', originalDate);
 
+      // Inserisci record commissioni se presente e diverso da 0
+      console.log('💳 Commissioni:', commissions)
+      
+      if (commissions && parseFloat(commissions) !== 0 && parseFloat(commissions) !== -0) {
+        await fastify.pg.query(`
+          INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `, [
+          originalDate,
+          'Commissioni Carta di Credito',
+          parseFloat(commissions),
+          db,
+          selectRows[0].ownerid,
+          selectRows[0].categoryid,
+          selectRows[0].subjectid,
+          selectRows[0].detailid,
+          '',
+          'Carte di Credito',
+          'pending'
+        ]);
+      }
+
+      const originalAmount = selectRows[0].amount;
+
+      let totalImportedAmount = 0;
+
       for (const transaction of excelToJson) {
         const { description, negativeAmount, positiveAmount } = transaction;
         let amount;
@@ -579,6 +605,7 @@ const transaction = async (fastify) => {
         } else {
           amount = parseFloat((negativeAmount || positiveAmount).toFixed(2));
         }
+        totalImportedAmount += amount;
         const paymentType = 'Carte di Credito';
 
         console.log('🔄 Elaborazione transazione:', { description, amount });
@@ -594,6 +621,21 @@ const transaction = async (fastify) => {
 
         console.log('🔍 Record trovati:', rows);
 
+
+        if (rows.length === 0) {
+          // 3️⃣ Se non esiste, inserisci il record con i riferimenti corretti
+          await fastify.pg.query(`
+            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailsid, '', paymentType, 'pending']);
+                } else {
+                  // Inserisci comunque il record con status imported_duplicate
+                  await fastify.pg.query(`
+            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailsid, '', paymentType, 'toCheck']);
+        }
+
         if (rows.length === 0) {
           // 3️⃣ Se non esiste, inserisci il record con i riferimenti corretti
           console.log('➕ Inserimento nuovo record');
@@ -604,12 +646,43 @@ const transaction = async (fastify) => {
         } else {
           // 4️⃣ Se il record esiste, aggiorna il suo stato a "imported_duplicate"
           console.log('♻️ Record duplicato, aggiornamento stato...');
+          console.log('➕ Inserimento nuovo record');
           await fastify.pg.query(`
-                    UPDATE transactions
-                    SET status = 'imported_duplicate'
-                    WHERE id = $1
-                `, [rows[0].id]);
+                    INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'toCheck']);
         }
+      }
+
+      // Dopo aver elaborato tutti i record, controlla la differenza
+      let totalWithCommissions = totalImportedAmount;
+
+      if(commissions) {
+        if(typeof commissions === 'string') {
+          totalWithCommissions += parseFloat(commissions);
+        }else{
+          totalWithCommissions += commissions;
+        }
+      }
+    
+      const diff = parseFloat((originalAmount - totalWithCommissions).toFixed(2));
+      if (diff !== 0) {
+        await fastify.pg.query(`
+          INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        `, [
+          selectRows[0].date,
+          'Rimanenza Carta di Credito',
+          diff,
+          db,
+          selectRows[0].ownerid,
+          selectRows[0].categoryid,
+          selectRows[0].subjectid,
+          selectRows[0].detailid,
+          '',
+          'Carte di Credito',
+          'pending'
+        ]);
       }
 
       // 5️⃣ Dopo aver elaborato tutti i record, aggiorna il record originale
