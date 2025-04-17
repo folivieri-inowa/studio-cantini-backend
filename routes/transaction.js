@@ -621,36 +621,21 @@ const transaction = async (fastify) => {
 
         console.log('🔍 Record trovati:', rows);
 
-
+        // 3️⃣ Inserisci il record con lo stato appropriato
         if (rows.length === 0) {
-          // 3️⃣ Se non esiste, inserisci il record con i riferimenti corretti
-          await fastify.pg.query(`
-            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailsid, '', paymentType, 'pending']);
-                } else {
-                  // Inserisci comunque il record con status imported_duplicate
-                  await fastify.pg.query(`
-            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailsid, '', paymentType, 'toCheck']);
-        }
-
-        if (rows.length === 0) {
-          // 3️⃣ Se non esiste, inserisci il record con i riferimenti corretti
+          // Se non esiste, inserisci con stato 'pending'
           console.log('➕ Inserimento nuovo record');
           await fastify.pg.query(`
-                    INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'pending']);
+            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'pending']);
         } else {
-          // 4️⃣ Se il record esiste, aggiorna il suo stato a "imported_duplicate"
-          console.log('♻️ Record duplicato, aggiornamento stato...');
-          console.log('➕ Inserimento nuovo record');
+          // Se esiste già, inserisci con stato 'toCheck'
+          console.log('♻️ Record duplicato, inserimento con stato toCheck');
           await fastify.pg.query(`
-                    INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'toCheck']);
+            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'toCheck']);
         }
       }
 
@@ -665,24 +650,100 @@ const transaction = async (fastify) => {
         }
       }
     
-      const diff = parseFloat((originalAmount - totalWithCommissions).toFixed(2));
+      // Arrotonda correttamente per evitare problemi di precisione
+      totalWithCommissions = parseFloat(totalWithCommissions.toFixed(2));
+      const originalAmountRounded = parseFloat(originalAmount.toFixed(2));
+      
+      console.log('📊 Dati di calcolo:');
+      console.log('- Importo originale:', originalAmountRounded);
+      console.log('- Totale importato:', totalWithCommissions);
+      console.log('- Di cui commissioni:', commissions ? parseFloat(commissions) : 0);
+      
+      // Calcola la differenza in valore assoluto
+      // Nota: gli importi originali e le commissioni sono negativi (spese)
+      const diff = parseFloat((originalAmountRounded - totalWithCommissions).toFixed(2));
+      console.log('- Differenza calcolata:', diff);
+      
+      // Per determinare se è rimanenza o compensazione:
+      // - Se l'importo originale è negativo (spesa) e il totale importato è MINORE in valore assoluto
+      //   rispetto all'importo originale → Rimanenza
+      // - Se l'importo originale è negativo (spesa) e il totale importato è MAGGIORE in valore assoluto
+      //   rispetto all'importo originale → Compensazione
+      
       if (diff !== 0) {
-        await fastify.pg.query(`
-          INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        `, [
-          selectRows[0].date,
-          'Rimanenza Carta di Credito',
-          diff,
-          db,
-          selectRows[0].ownerid,
-          selectRows[0].categoryid,
-          selectRows[0].subjectid,
-          selectRows[0].detailid,
-          '',
-          'Carte di Credito',
-          'pending'
-        ]);
+        try {
+          // Se importo originale è negativo (è una spesa)
+          if (originalAmountRounded < 0) {
+            // L'importo originale e il totale importato sono entrambi negativi
+            // Confrontiamo i valori assoluti
+            const absOriginal = Math.abs(originalAmountRounded);
+            const absImported = Math.abs(totalWithCommissions);
+            
+            if (absImported < absOriginal) {
+              // Hai speso MENO rispetto all'importo originale → RIMANENZA
+              console.log(`💰 Creazione voce "Rimanenza Carta di Credito" per €${Math.abs(diff)}`);
+              
+              const insertQuery = `
+                INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                RETURNING id;
+              `;
+              
+              const insertParams = [
+                selectRows[0].date,
+                'Rimanenza Carta di Credito',
+                diff, // Rimanenza è negativa perché è la parte non spesa di una somma già addebitata
+                db,
+                selectRows[0].ownerid,
+                selectRows[0].categoryid,
+                selectRows[0].subjectid,
+                selectRows[0].detailid,
+                'Differenza tra addebito originale e spese effettive sulla carta',
+                'Carte di Credito',
+                'pending'
+              ];
+              
+              console.log('🔍 Parametri di inserimento:', JSON.stringify(insertParams));
+              
+              const { rows: insertResult } = await fastify.pg.query(insertQuery, insertParams);
+              console.log('✅ Rimanenza inserita con ID:', insertResult[0]?.id);
+            } else {
+              // Hai speso PIÙ rispetto all'importo originale → COMPENSAZIONE
+              const absDiff = Math.abs(diff); // Rendiamo positivo per chiarezza
+              console.log(`💳 Creazione voce "Compensazione da rimanenza carta di credito" per €${absDiff}`);
+              
+              const insertQuery = `
+                INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                RETURNING id;
+              `;
+              
+              const insertParams = [
+                selectRows[0].date,
+                'Compensazione da rimanenza carta di credito',
+                absDiff, // Compensazione è positiva perché bilancia spese in eccesso
+                db,
+                selectRows[0].ownerid,
+                selectRows[0].categoryid,
+                selectRows[0].subjectid,
+                selectRows[0].detailid,
+                'Compensazione per eccesso di spesa rispetto all\'importo originale (utilizzo di residuo precedente)',
+                'Carte di Credito',
+                'pending'
+              ];
+              
+              console.log('🔍 Parametri di inserimento:', JSON.stringify(insertParams));
+              
+              const { rows: insertResult } = await fastify.pg.query(insertQuery, insertParams);
+              console.log('✅ Compensazione inserita con ID:', insertResult[0]?.id);
+            }
+          } else {
+            // Per completezza gestiamo anche il caso di importo originale positivo
+            console.log(`⚠️ Importo originale positivo: ${originalAmountRounded}. Gestione non implementata.`);
+          }
+        } catch (error) {
+          console.error('❌ Errore nell\'inserimento del record di rimanenza/compensazione:', error);
+        }
       }
 
       // 5️⃣ Dopo aver elaborato tutti i record, aggiorna il record originale
