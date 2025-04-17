@@ -6,7 +6,8 @@ const owner = async (fastify) => {
 
     try {
       // Fetch owners from the PostgreSQL database where db matches the input
-      const ownersQuery = 'SELECT * FROM owners WHERE db = $1';
+      // e rinomina il campo "date" in "balanceDate" per il frontend
+      const ownersQuery = 'SELECT id, db, name, cc, iban, "initialBalance", "date" as "balanceDate" FROM owners WHERE db = $1';
       const { rows: ownersRows } = await fastify.pg.query(ownersQuery, [db]);
 
       reply.send(ownersRows);
@@ -18,14 +19,14 @@ const owner = async (fastify) => {
 
   fastify.post('/create', { preHandler: fastify.authenticate }, async (request, reply) => {
     try {
-      const { db, name, cc, iban } = request.body;
+      const { db, name, cc, iban, initialBalance, balanceDate } = request.body;
 
       const query = `
-        INSERT INTO owners (db, name, cc, iban)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO owners (db, name, cc, iban, "initialBalance", "date")
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *;
       `;
-      const values = [db, name, cc, iban];
+      const values = [db, name, cc, iban, initialBalance || 0, balanceDate || null];
 
       const { rows } = await fastify.pg.query(query, values);
       const newOwner = rows[0];
@@ -40,6 +41,20 @@ const owner = async (fastify) => {
   fastify.post('/edit', { preHandler: fastify.authenticate }, async (request, reply) => {
     try {
       const { id, ...updateData } = request.body;
+      
+      // Gestione speciale per initialBalance (case sensitive)
+      if ('initialBalance' in updateData) {
+        // Rinomina la chiave per preservare la case sensitivity nella query
+        updateData['"initialBalance"'] = updateData.initialBalance;
+        delete updateData.initialBalance;
+      }
+      
+      // Gestione del campo balanceDate -> date nel database
+      if ('balanceDate' in updateData) {
+        // Rinomina la chiave per utilizzare "date" nel database
+        updateData['"date"'] = updateData.balanceDate;
+        delete updateData.balanceDate;
+      }
 
       const updateFields = Object.keys(updateData).map((key, index) => `${key} = $${index + 2}`).join(', ');
       const updateValues = Object.values(updateData);

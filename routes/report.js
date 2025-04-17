@@ -3,6 +3,30 @@ const report = async (fastify) => {
     const db = request.params.db;
 
     try {
+      // Fetch owner data including initial balance
+      const { rows: ownersData } = await fastify.pg.query(`
+        SELECT 
+          id, 
+          name, 
+          cc, 
+          iban, 
+          "initialBalance",
+          "date" as balanceDate
+        FROM 
+          owners
+        WHERE 
+          db = $1
+      `, [db]);
+
+      // Create a map for quick lookup
+      const ownerMap = {};
+      ownersData.forEach(owner => {
+        ownerMap[owner.id] = {
+          initialBalance: parseFloat(owner.initialBalance || 0),
+          balanceDate: owner.balanceDate
+        };
+      });
+
       // Fetch all transactions from PostgreSQL
       const { rows: transactions } = await fastify.pg.query(`
       SELECT 
@@ -46,6 +70,8 @@ const report = async (fastify) => {
             name: tx.ownername,
             cc: tx.cc || null,
             iban: tx.iban || null,
+            initialBalance: ownerMap[ownerId]?.initialBalance || 0,
+            balanceDate: ownerMap[ownerId]?.balanceDate || null,
             report: {
               years: new Set(),
               globalReport: {},
