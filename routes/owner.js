@@ -7,7 +7,7 @@ const owner = async (fastify) => {
     try {
       // Fetch owners from the PostgreSQL database where db matches the input
       // e rinomina il campo "date" in "balanceDate" per il frontend
-      const ownersQuery = 'SELECT id, db, name, cc, iban, "initialBalance", "date" as "balanceDate" FROM owners WHERE db = $1';
+      const ownersQuery = 'SELECT id, db, name, cc, iban, initialbalance as "initialBalance", "date" as "balanceDate" FROM owners WHERE db = $1';
       const { rows: ownersRows } = await fastify.pg.query(ownersQuery, [db]);
 
       reply.send(ownersRows);
@@ -22,7 +22,7 @@ const owner = async (fastify) => {
       const { db, name, cc, iban, initialBalance, balanceDate } = request.body;
 
       const query = `
-        INSERT INTO owners (db, name, cc, iban, "initialBalance", "date")
+        INSERT INTO owners (db, name, cc, iban, initialbalance, "date")
         VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING *;
       `;
@@ -44,8 +44,8 @@ const owner = async (fastify) => {
       
       // Gestione speciale per initialBalance (case sensitive)
       if ('initialBalance' in updateData) {
-        // Rinomina la chiave per preservare la case sensitivity nella query
-        updateData['"initialBalance"'] = updateData.initialBalance;
+        // Rinomina la chiave per adattarla al nome della colonna nel database
+        updateData.initialbalance = updateData.initialBalance;
         delete updateData.initialBalance;
       }
       
