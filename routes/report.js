@@ -3,14 +3,14 @@ const report = async (fastify) => {
     const db = request.params.db;
 
     try {
-      // Fetch owner data including initial balance
+      // Fetch owner data including initial balance - corretto initialBalance in initialbalance
       const { rows: ownersData } = await fastify.pg.query(`
         SELECT 
           id, 
           name, 
           cc, 
           iban, 
-          "initialBalance",
+          initialbalance as "initialBalance",
           "date" as balanceDate
         FROM 
           owners
