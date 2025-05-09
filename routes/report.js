@@ -110,12 +110,15 @@ const report = async (fastify) => {
 
         // Update global and category totals
         if (amount >= 0) {
-          report.globalReport[year].income += amount;
-          report.globalReport[year].months[month].income += amount;
-          report.categoryReport[year][categoryId].totalIncome += amount;
-          report.categoryReport[year][categoryId].months[month].income += amount;
+          // Arrotondiamo a 2 decimali per maggiore precisione
+          const amountRounded = parseFloat(amount.toFixed(2));
+          report.globalReport[year].income += amountRounded;
+          report.globalReport[year].months[month].income += amountRounded;
+          report.categoryReport[year][categoryId].totalIncome += amountRounded;
+          report.categoryReport[year][categoryId].months[month].income += amountRounded;
         } else {
-          const absAmount = Math.abs(amount);
+          // Arrotondiamo a 2 decimali per maggiore precisione
+          const absAmount = parseFloat(Math.abs(amount).toFixed(2));
           report.globalReport[year].expense += absAmount;
           report.globalReport[year].months[month].expense += absAmount;
           report.categoryReport[year][categoryId].totalExpense += absAmount;
@@ -217,14 +220,17 @@ const report = async (fastify) => {
 
         // Update monthly totals
         if (amount > 0) {
+          // Arrotondiamo per maggiore precisione
+          const amountRounded = parseFloat(amount.toFixed(2));
           if (isPrevYear) {
-            report.monthlyTotals[month].prevIncome += amount;
+            report.monthlyTotals[month].prevIncome += amountRounded;
           } else {
-            report.totalIncome += amount;
-            report.monthlyTotals[month].income += amount;
+            report.totalIncome += amountRounded;
+            report.monthlyTotals[month].income += amountRounded;
           }
         } else {
-          const absAmount = Math.abs(amount);
+          // Arrotondiamo per maggiore precisione
+          const absAmount = parseFloat(Math.abs(amount).toFixed(2));
           if (isPrevYear) {
             report.monthlyTotals[month].prevExpense += absAmount;
           } else {
@@ -260,14 +266,17 @@ const report = async (fastify) => {
 
           // Update subject totals
           if (amount > 0) {
+            // Arrotondiamo per maggiore precisione
+            const amountRounded = parseFloat(amount.toFixed(2));
             if (isPrevYear) {
-              report.subcategories[subjectId].monthlyDetails[month].prevIncome += amount;
+              report.subcategories[subjectId].monthlyDetails[month].prevIncome += amountRounded;
             } else {
-              report.subcategories[subjectId].totalIncome += amount;
-              report.subcategories[subjectId].monthlyDetails[month].income += amount;
+              report.subcategories[subjectId].totalIncome += amountRounded;
+              report.subcategories[subjectId].monthlyDetails[month].income += amountRounded;
             }
           } else {
-            const absAmount = Math.abs(amount);
+            // Arrotondiamo per maggiore precisione
+            const absAmount = parseFloat(Math.abs(amount).toFixed(2));
             if (isPrevYear) {
               report.subcategories[subjectId].monthlyDetails[month].prevExpense += absAmount;
             } else {
@@ -318,8 +327,10 @@ const report = async (fastify) => {
         const monthCount = lastTransactionMonth > 0 ? lastTransactionMonth : 0;
 
         // Calculate average based on all months from January to last month with activity
-        const averageCost = monthCount > 0 ? subject.totalExpense / monthCount : 0;
-        const totalExpenseCost = subject.totalExpense.toFixed(2);
+        // Arrotondiamo per maggiore precisione
+        const totalExpense = parseFloat(subject.totalExpense.toFixed(2));
+        const averageCost = monthCount > 0 ? parseFloat((totalExpense / monthCount).toFixed(2)) : 0;
+        const totalExpenseCost = totalExpense.toFixed(2);
 
         // Process details (values)
         subject.values = subject.values.map(value => {
@@ -330,7 +341,7 @@ const report = async (fastify) => {
           );
 
           const totalExpense = relatedTransactions.reduce(
-            (sum, tx) => sum + Math.abs(parseFloat(tx.amount)), 0,
+            (sum, tx) => sum + parseFloat(Math.abs(parseFloat(tx.amount)).toFixed(2)), 0,
           );
 
           // Get the last month with a transaction for this detail
@@ -342,7 +353,8 @@ const report = async (fastify) => {
           const monthsCount = lastMonth > 0 ? lastMonth : 0;
 
           // Calculate average based on all months until the last transaction month
-          const avgCost = monthsCount > 0 ? totalExpense / monthsCount : 0;
+          // Arrotondiamo per maggiore precisione
+          const avgCost = monthsCount > 0 ? parseFloat((totalExpense / monthsCount).toFixed(2)) : 0;
 
           return {
             ...value,
@@ -454,14 +466,17 @@ const report = async (fastify) => {
 
         // Aggregate income and expenses
         if (amount > 0) {
+          // Arrotondiamo per maggiore precisione
+          const amountRounded = parseFloat(amount.toFixed(2));
           if (isPrevYear) {
-            report.monthlyTotals[month].prevIncome += amount;
+            report.monthlyTotals[month].prevIncome += amountRounded;
           } else {
-            report.totalIncome += amount;
-            report.monthlyTotals[month].income += amount;
+            report.totalIncome += amountRounded;
+            report.monthlyTotals[month].income += amountRounded;
           }
         } else {
-          const absAmount = Math.abs(amount);
+          // Arrotondiamo per maggiore precisione
+          const absAmount = parseFloat(Math.abs(amount).toFixed(2));
           if (isPrevYear) {
             report.monthlyTotals[month].prevExpense += absAmount;
           } else {
@@ -477,11 +492,14 @@ const report = async (fastify) => {
 
       // Calculate average monthly expense
       // Divide by the number of months from January to the last month with a transaction
-      const avgMonthlyExpense = lastExpenseMonth > 0 ? currentYearExpenses / lastExpenseMonth : 0;
+      const currentYearExpensesRounded = parseFloat(currentYearExpenses.toFixed(2));
+      const avgMonthlyExpense = lastExpenseMonth > 0 
+        ? parseFloat((currentYearExpensesRounded / lastExpenseMonth).toFixed(2)) 
+        : 0;
 
       // Update the details object with calculated values
       report.details.averageCost = avgMonthlyExpense.toFixed(2);
-      report.details.totalExpense = currentYearExpenses.toFixed(2);
+      report.details.totalExpense = currentYearExpensesRounded.toFixed(2);
 
       reply.send(report);
     } catch (error) {
@@ -585,3 +603,7 @@ const report = async (fastify) => {
 };
 
 export default report;
+
+// Aggiungiamo un commento per documentare il comportamento del master report
+// Il master report fornisce dati aggiornati ogni volta che viene chiamato, senza cache
+// È importante che i client aggiornino regolarmente questi dati per avere una visione sempre aggiornata
