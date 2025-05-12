@@ -311,6 +311,9 @@ const transaction = async (fastify) => {
     const { db, owner, category, subject, details, year } = request.body;
 
     try {
+      // Handle the special case for "all-accounts"
+      const isAllAccounts = owner === 'all-accounts';
+
       const query = `
         SELECT
           to_char(t.date, 'YYYY-MM-DD') AS date,
@@ -329,20 +332,24 @@ const transaction = async (fastify) => {
           owners o ON t.ownerId = o.id
         WHERE
           t.db = $1
-          AND t.ownerId = $2
-          AND t.categoryId = $3
-          AND t.subjectId = $4
-          ${details ? 'AND t.detailId = $5' : ''}
-          AND EXTRACT(YEAR FROM t.date) = $${details ? '6' : '5'}
+          ${isAllAccounts ? '' : 'AND t.ownerId = $2'}
+          AND t.categoryId = ${isAllAccounts ? '$2' : '$3'}
+          AND t.subjectId = ${isAllAccounts ? '$3' : '$4'}
+          ${details ? `AND t.detailId = $${isAllAccounts ? '4' : '5'}` : ''}
+          AND EXTRACT(YEAR FROM t.date) = $${isAllAccounts ? (details ? '5' : '4') : (details ? '6' : '5')}
       `;
 
-      const values = details
-        ? [db, owner, category, subject, details, parseInt(year)]
-        : [db, owner, owner, owner, parseInt(year)];
+      const values = isAllAccounts
+        ? (details
+            ? [db, category, subject, details, parseInt(year)]
+            : [db, category, subject, parseInt(year)])
+        : (details
+            ? [db, owner, category, subject, details, parseInt(year)]
+            : [db, owner, category, subject, parseInt(year)]);
 
       const { rows } = await fastify.pg.query(query, values);
 
-      reply.send(rows);
+      reply.send({ data: rows });
     } catch (error) {
       console.error('Error fetching data', error);
       reply.status(500).send({ error: 'Failed to fetch data' });
@@ -573,7 +580,7 @@ const transaction = async (fastify) => {
 
       // Inserisci record commissioni se presente e diverso da 0
       console.log('💳 Commissioni:', commissions)
-      
+
       if (commissions && parseFloat(commissions) !== 0 && parseFloat(commissions) !== -0) {
         await fastify.pg.query(`
           INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
@@ -649,27 +656,27 @@ const transaction = async (fastify) => {
           totalWithCommissions += commissions;
         }
       }
-    
+
       // Arrotonda correttamente per evitare problemi di precisione
       totalWithCommissions = parseFloat(totalWithCommissions.toFixed(2));
       const originalAmountRounded = parseFloat(originalAmount.toFixed(2));
-      
+
       console.log('📊 Dati di calcolo:');
       console.log('- Importo originale:', originalAmountRounded);
       console.log('- Totale importato:', totalWithCommissions);
       console.log('- Di cui commissioni:', commissions ? parseFloat(commissions) : 0);
-      
+
       // Calcola la differenza in valore assoluto
       // Nota: gli importi originali e le commissioni sono negativi (spese)
       const diff = parseFloat((originalAmountRounded - totalWithCommissions).toFixed(2));
       console.log('- Differenza calcolata:', diff);
-      
+
       // Per determinare se è rimanenza o compensazione:
       // - Se l'importo originale è negativo (spesa) e il totale importato è MINORE in valore assoluto
       //   rispetto all'importo originale → Rimanenza
       // - Se l'importo originale è negativo (spesa) e il totale importato è MAGGIORE in valore assoluto
       //   rispetto all'importo originale → Compensazione
-      
+
       if (diff !== 0) {
         try {
           // Se importo originale è negativo (è una spesa)
@@ -678,17 +685,17 @@ const transaction = async (fastify) => {
             // Confrontiamo i valori assoluti
             const absOriginal = Math.abs(originalAmountRounded);
             const absImported = Math.abs(totalWithCommissions);
-            
+
             if (absImported < absOriginal) {
               // Hai speso MENO rispetto all'importo originale → RIMANENZA
               console.log(`💰 Creazione voce "Rimanenza Carta di Credito" per €${Math.abs(diff)}`);
-              
+
               const insertQuery = `
                 INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 RETURNING id;
               `;
-              
+
               const insertParams = [
                 selectRows[0].date,
                 'Rimanenza Carta di Credito',
@@ -702,22 +709,22 @@ const transaction = async (fastify) => {
                 'Carte di Credito',
                 'pending'
               ];
-              
+
               console.log('🔍 Parametri di inserimento:', JSON.stringify(insertParams));
-              
+
               const { rows: insertResult } = await fastify.pg.query(insertQuery, insertParams);
               console.log('✅ Rimanenza inserita con ID:', insertResult[0]?.id);
             } else {
               // Hai speso PIÙ rispetto all'importo originale → COMPENSAZIONE
               const absDiff = Math.abs(diff); // Rendiamo positivo per chiarezza
               console.log(`💳 Creazione voce "Compensazione da rimanenza carta di credito" per €${absDiff}`);
-              
+
               const insertQuery = `
                 INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 RETURNING id;
               `;
-              
+
               const insertParams = [
                 selectRows[0].date,
                 'Compensazione da rimanenza carta di credito',
@@ -731,9 +738,9 @@ const transaction = async (fastify) => {
                 'Carte di Credito',
                 'pending'
               ];
-              
+
               console.log('🔍 Parametri di inserimento:', JSON.stringify(insertParams));
-              
+
               const { rows: insertResult } = await fastify.pg.query(insertQuery, insertParams);
               console.log('✅ Compensazione inserita con ID:', insertResult[0]?.id);
             }

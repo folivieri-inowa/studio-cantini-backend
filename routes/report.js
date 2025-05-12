@@ -148,47 +148,100 @@ const report = async (fastify) => {
         return reply.status(400).send({ error: 'Missing required parameters' });
       }
 
-      // Get owner and category data
-      const { rows: ownerData } = await fastify.pg.query(
-        'SELECT id, name, cc, iban FROM owners WHERE id = $1',
-        [owner],
-      );
-
+      // Get category data
       const { rows: categoryData } = await fastify.pg.query(
         'SELECT id, name FROM categories WHERE id = $1',
         [category],
       );
 
-      if (!ownerData.length || !categoryData.length) {
-        return reply.status(404).send({ error: 'Owner or category not found' });
+      if (!categoryData.length) {
+        return reply.status(404).send({ error: 'Category not found' });
       }
 
       const prevStartDate = `${parseInt(year) - 1}-01-01`;
       const endDate = `${year}-12-31`;
 
-      // Get all transactions for the specified category and owner
-      const { rows: transactions } = await fastify.pg.query(`
-      SELECT 
-        t.id,
-        to_char(t.date, 'YYYY-MM-DD') AS date,
-        t.amount,
-        t.subjectid,
-        s.name AS subject_name,
-        t.detailid,
-        d.name AS detail_name
-      FROM 
-        transactions t
-      LEFT JOIN 
-        subjects s ON t.subjectid = s.id
-      LEFT JOIN 
-        details d ON t.detailid = d.id
-      WHERE 
-        t.db = $1
-        AND t.ownerid = $2
-        AND t.categoryid = $3
-        AND t.date >= $4
-        AND t.date <= $5
-    `, [db, owner, category, prevStartDate, endDate]);
+      let ownerData;
+      let transactions;
+
+      // Check if we're requesting all accounts
+      if (owner === 'all-accounts') {
+        // For "all accounts", create a virtual owner
+        ownerData = [{
+          id: 'all-accounts',
+          name: 'Tutti i conti',
+          cc: '',
+          iban: ''
+        }];
+
+        // Get all transactions for the specified category across all owners in this db
+        const { rows: allTransactions } = await fastify.pg.query(`
+        SELECT 
+          t.id,
+          to_char(t.date, 'YYYY-MM-DD') AS date,
+          t.amount,
+          t.subjectid,
+          s.name AS subject_name,
+          t.detailid,
+          d.name AS detail_name,
+          t.ownerid,
+          o.name AS owner_name,
+          o.cc AS owner_cc
+        FROM 
+          transactions t
+        LEFT JOIN 
+          subjects s ON t.subjectid = s.id
+        LEFT JOIN 
+          details d ON t.detailid = d.id
+        LEFT JOIN
+          owners o ON t.ownerid = o.id
+        WHERE 
+          t.db = $1
+          AND t.categoryid = $2
+          AND t.date >= $3
+          AND t.date <= $4
+        `, [db, category, prevStartDate, endDate]);
+
+        transactions = allTransactions;
+      } else {
+        // Get owner data for a specific owner
+        const { rows: specificOwnerData } = await fastify.pg.query(
+          'SELECT id, name, cc, iban FROM owners WHERE id = $1',
+          [owner],
+        );
+
+        if (!specificOwnerData.length) {
+          return reply.status(404).send({ error: 'Owner not found' });
+        }
+
+        ownerData = specificOwnerData;
+
+        // Get all transactions for the specified category and owner
+        const { rows: ownerTransactions } = await fastify.pg.query(`
+        SELECT 
+          t.id,
+          to_char(t.date, 'YYYY-MM-DD') AS date,
+          t.amount,
+          t.subjectid,
+          s.name AS subject_name,
+          t.detailid,
+          d.name AS detail_name
+        FROM 
+          transactions t
+        LEFT JOIN 
+          subjects s ON t.subjectid = s.id
+        LEFT JOIN 
+          details d ON t.detailid = d.id
+        WHERE 
+          t.db = $1
+          AND t.ownerid = $2
+          AND t.categoryid = $3
+          AND t.date >= $4
+          AND t.date <= $5
+        `, [db, owner, category, prevStartDate, endDate]);
+
+        transactions = ownerTransactions;
+      }
 
       // Initialize the report
       let report = {
@@ -407,29 +460,66 @@ const report = async (fastify) => {
         return reply.status(404).send({ error: "Detail not found" });
       }
 
-      // Retrieve transactions for current and previous year
-      const { rows: transactions } = await fastify.pg.query(`
-      SELECT
-        t.id,
-        to_char(t.date, 'YYYY-MM-DD') AS date,
-        t.amount,
-        t.detailid,
-        d.name AS detail_name,
-        EXTRACT(MONTH FROM t.date) AS month,
-        EXTRACT(YEAR FROM t.date) AS year
-      FROM
-        transactions t
-      LEFT JOIN
-        details d ON t.detailid = d.id
-      WHERE
-        t.db = $1
-        AND t.ownerid = $2
-        AND t.categoryid = $3
-        AND t.subjectid = $4
-        AND t.detailid = $5
-        AND t.date >= $6
-        AND t.date <= $7
-    `, [db, owner, category, subject, details, startDatePrevious, endDateCurrent]);
+      let transactions;
+
+      // Check if we're requesting all accounts
+      if (owner === 'all-accounts') {
+        // Retrieve transactions for all owners
+        const { rows: allTransactions } = await fastify.pg.query(`
+        SELECT
+          t.id,
+          to_char(t.date, 'YYYY-MM-DD') AS date,
+          t.amount,
+          t.detailid,
+          d.name AS detail_name,
+          EXTRACT(MONTH FROM t.date) AS month,
+          EXTRACT(YEAR FROM t.date) AS year,
+          t.ownerid,
+          o.name AS owner_name,
+          o.cc AS owner_cc
+        FROM
+          transactions t
+        LEFT JOIN
+          details d ON t.detailid = d.id
+        LEFT JOIN
+          owners o ON t.ownerid = o.id
+        WHERE
+          t.db = $1
+          AND t.categoryid = $2
+          AND t.subjectid = $3
+          AND t.detailid = $4
+          AND t.date >= $5
+          AND t.date <= $6
+        `, [db, category, subject, details, startDatePrevious, endDateCurrent]);
+
+        transactions = allTransactions;
+      } else {
+        // Retrieve transactions for a specific owner
+        const { rows: ownerTransactions } = await fastify.pg.query(`
+        SELECT
+          t.id,
+          to_char(t.date, 'YYYY-MM-DD') AS date,
+          t.amount,
+          t.detailid,
+          d.name AS detail_name,
+          EXTRACT(MONTH FROM t.date) AS month,
+          EXTRACT(YEAR FROM t.date) AS year
+        FROM
+          transactions t
+        LEFT JOIN
+          details d ON t.detailid = d.id
+        WHERE
+          t.db = $1
+          AND t.ownerid = $2
+          AND t.categoryid = $3
+          AND t.subjectid = $4
+          AND t.detailid = $5
+          AND t.date >= $6
+          AND t.date <= $7
+        `, [db, owner, category, subject, details, startDatePrevious, endDateCurrent]);
+
+        transactions = ownerTransactions;
+      }
 
       // Initialize report
       let report = {
@@ -529,27 +619,61 @@ const report = async (fastify) => {
 
       const subjectName = subjectData.length > 0 ? subjectData[0].name : `Subject ${subject}`;
 
-      const query = `
-      SELECT
-        t.detailid as detail_id,
-        d.name as detail_name,
-        EXTRACT(MONTH FROM t.date) as month,
-        EXTRACT(YEAR FROM t.date) as year,
-        SUM(t.amount) as amount
-      FROM transactions t
-      JOIN details d ON t.detailid = d.id
-      WHERE
-        t.subjectid = $1 AND
-        t.categoryid = $2 AND
-        t.ownerid = $3 AND
-        EXTRACT(YEAR FROM t.date) IN ($4, $5) AND
-        t.amount < 0 AND
-        t.db = $6
-      GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date)
-      ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
-    `;
+      let rows;
 
-      const { rows } = await fastify.pg.query(query, [subject, category, owner, prevYear, currentYear, db]);
+      // Check if we're requesting all accounts
+      if (owner === 'all-accounts') {
+        // For all accounts, we need to get transactions for all owners
+        const allAccountsQuery = `
+        SELECT
+          t.detailid as detail_id,
+          d.name as detail_name,
+          EXTRACT(MONTH FROM t.date) as month,
+          EXTRACT(YEAR FROM t.date) as year,
+          SUM(t.amount) as amount,
+          t.ownerid,
+          o.name as owner_name,
+          o.cc as owner_cc
+        FROM transactions t
+        JOIN details d ON t.detailid = d.id
+        JOIN owners o ON t.ownerid = o.id
+        WHERE
+          t.subjectid = $1 AND
+          t.categoryid = $2 AND
+          EXTRACT(YEAR FROM t.date) IN ($3, $4) AND
+          t.amount < 0 AND
+          t.db = $5
+        GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date), t.ownerid, o.name, o.cc
+        ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
+        `;
+
+        const { rows: allAccountsRows } = await fastify.pg.query(allAccountsQuery, [subject, category, prevYear, currentYear, db]);
+        rows = allAccountsRows;
+      } else {
+        // For a specific owner, use the original query
+        const specificOwnerQuery = `
+        SELECT
+          t.detailid as detail_id,
+          d.name as detail_name,
+          EXTRACT(MONTH FROM t.date) as month,
+          EXTRACT(YEAR FROM t.date) as year,
+          SUM(t.amount) as amount
+        FROM transactions t
+        JOIN details d ON t.detailid = d.id
+        WHERE
+          t.subjectid = $1 AND
+          t.categoryid = $2 AND
+          t.ownerid = $3 AND
+          EXTRACT(YEAR FROM t.date) IN ($4, $5) AND
+          t.amount < 0 AND
+          t.db = $6
+        GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date)
+        ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
+        `;
+
+        const { rows: specificOwnerRows } = await fastify.pg.query(specificOwnerQuery, [subject, category, owner, prevYear, currentYear, db]);
+        rows = specificOwnerRows;
+      }
 
       // Get all unique details
       const detailsSet = new Set();
