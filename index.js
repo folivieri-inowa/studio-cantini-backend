@@ -15,6 +15,8 @@ import {
   TransactionRoutes,
   UploadRoutes,
 } from './routes/index.js';
+// Migrazione database
+import { runMigrations } from './lib/migrations.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -62,22 +64,28 @@ fastify.setErrorHandler(function (error, request, reply) {
  * Run the server!
 */
 
-if (process.env.PROD) {
-  console.log('Run in production');
-  fastify.listen({ port: process.env.PORT, host: '0.0.0.0' }, (err, address) => {
-    if (err) {
-      console.error(err);
-      process.exit(1);
+const start = async () => {
+  try {
+    // Attendi che tutti i plugin siano registrati prima di eseguire le migrazioni
+    await fastify.ready();
+    
+    // Esegui le migrazioni del database prima di avviare il server
+    console.log('Esecuzione delle migrazioni del database...');
+    await runMigrations(fastify);
+    
+    // Avvia il server dopo aver completato le migrazioni
+    if (process.env.PROD) {
+      console.log('Run in production');
+      await fastify.listen({ port: process.env.PORT, host: '0.0.0.0' });
+    } else {
+      console.log('Run in development');
+      await fastify.listen({ port: process.env.PORT });
     }
-    console.log(`Server listening on ${address}`);
-  });
-} else {
-  console.log('Run in development');
-  fastify.listen({ port: process.env.PORT }, (err, address) => {
-    if (err) {
-      console.error(err);
-      process.exit(1);
-    }
-    console.log(`Server listening on ${address}`);
-  });
-}
+    console.log(`Server listening on ${fastify.server.address().port}`);
+  } catch (err) {
+    console.error('Errore durante l\'avvio del server:', err);
+    process.exit(1);
+  }
+};
+
+start();

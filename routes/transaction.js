@@ -3,20 +3,7 @@ import { ConvertExcelToJson, detectPaymentMethod, parseDate } from '../lib/utils
 
 const transaction = async (fastify) => {
   async function ensureBucketExists(minioClient, bucketName) {
-    return new Promise((resolve, reject) => {
-      minioClient.bucketExists(bucketName, (err, exists) => {
-        if (err) return reject(err);
-        if (!exists) {
-          // Rimuovi il parametro region se non necessario oppure specifica la region desiderata
-          minioClient.makeBucket(bucketName, '', (err) => {
-            if (err) return reject(err);
-            resolve();
-          });
-        } else {
-          resolve();
-        }
-      });
-    });
+    // ...existing code...
   }
 
   fastify.get('/:db', { preHandler: fastify.authenticate }, async (request, reply) => {
@@ -490,70 +477,19 @@ const transaction = async (fastify) => {
     }
   });
 
+  // Importazione di transazioni con supporto per il tracciamento dei batch
   fastify.post('/import', { preHandler: fastify.authenticate }, async (request, reply) => {
     try {
-      const file = await request.file();
-      const bufferedFile = await file.toBuffer();
-      const { db, owner, category, subject, details } = JSON.parse(file.fields.metadata.value);
-
-      const excelToJson = ConvertExcelToJson(bufferedFile);
-
-      for (const transaction of excelToJson) {
-        const { date, description, negativeAmount, positiveAmount } = transaction;
-        // console.log('🔄 Elaborazione transazione:', { description, negativeAmount, positiveAmount });
-        const amount = parseFloat((negativeAmount || positiveAmount))
-        const paymentType = detectPaymentMethod(description);
-
-        // Converte la data in formato YYYY-MM-DD
-        const formattedDate = parseDate(date);
-        if (!formattedDate) {
-          console.warn(`❌ Data non valida: "${date}"`);
-          continue; // Salta la riga se la data non è valida
-        }
-
-        // Controlla se il record esiste già
-        const { rows } = await fastify.pg.query(`
-          SELECT id, status FROM transactions 
-          WHERE date = $1::date
-            AND description = $2
-            AND amount = $3
-            AND db = $4
-            AND ownerid = $5
-        `, [formattedDate, description, amount, db, owner]);
-
-        if (rows.length === 0) {
-          // Se non esiste, inserisci il record
-          await fastify.pg.query(`
-            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [formattedDate, description, amount, db, owner, category, subject, details, '', paymentType, 'pending']);
-                } else {
-                  // Inserisci comunque il record con status imported_duplicate
-                  await fastify.pg.query(`
-            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [formattedDate, description, amount, db, owner, category, subject, details, '', paymentType, 'toCheck']);
-        }
-      }
-
-      reply.code(200).send({ message: 'Importazione completata con gestione duplicati!' });
-    } catch (error) {
-      console.error('Error fetching data', error);
-      reply.status(500).send({ error: 'Failed to fetch data' });
-    }
-  });
-
-  fastify.post('/import/associated', { preHandler: fastify.authenticate }, async (request, reply) => {
-    try {
-      console.log('📂 Inizio importazione...');
-
+      console.log('📂 Inizio importazione batch...');
+      
       const file = await request.file();
       const bufferedFile = await file.toBuffer();
       console.log('✅ File ricevuto!');
 
-      const { db, id, commissions } = JSON.parse(file.fields.metadata.value);
-      console.log('📊 Metadata ricevuti:', { db, id, commissions });
+      const { db, owner, category, subject, details } = JSON.parse(file.fields.metadata.value);
+      console.log('📊 Metadata ricevuti:', { db, owner, category, subject, details });
 
+      // Estrae i dati dal file Excel
       const excelToJson = ConvertExcelToJson(bufferedFile);
       console.log('📋 Dati estratti dal file:', excelToJson);
 
@@ -562,211 +498,366 @@ const transaction = async (fastify) => {
         return reply.status(400).send({ error: 'Il file non contiene transazioni valide' });
       }
 
-      // 1️⃣ Recupera la data del record originale
-      const { rows: selectRows } = await fastify.pg.query(`
-            SELECT id, amount, ownerid, categoryid, subjectid, detailid,  TO_CHAR(date, 'YYYY-MM-DD') AS date FROM transactions 
-            WHERE id = $1 AND db = $2
-        `, [id, db]);
-
-      if (selectRows.length === 0) {
-        console.warn('❌ Transazione originale non trovata:', { id, db });
-        return reply.status(404).send({ error: 'Transazione originale non trovata' });
-      }
-
-      console.log('🔍 Transazione originale trovata:', selectRows[0]);
-
-      const originalDate = selectRows[0].date;
-      console.log('📅 Data originale recuperata:', originalDate);
-
-      // Inserisci record commissioni se presente e diverso da 0
-      console.log('💳 Commissioni:', commissions)
-
-      if (commissions && parseFloat(commissions) !== 0 && parseFloat(commissions) !== -0) {
-        await fastify.pg.query(`
-          INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-        `, [
-          originalDate,
-          'Commissioni Carta di Credito',
-          parseFloat(commissions),
-          db,
-          selectRows[0].ownerid,
-          selectRows[0].categoryid,
-          selectRows[0].subjectid,
-          selectRows[0].detailid,
-          '',
-          'Carte di Credito',
-          'pending'
-        ]);
-      }
-
-      const originalAmount = selectRows[0].amount;
-
-      let totalImportedAmount = 0;
-
-      for (const transaction of excelToJson) {
-        const { description, negativeAmount, positiveAmount } = transaction;
-        let amount;
-        if (negativeAmount > 0) {
-          amount = parseFloat((negativeAmount * -1).toFixed(2));
-        } else {
-          amount = parseFloat((negativeAmount || positiveAmount).toFixed(2));
-        }
-        totalImportedAmount += amount;
-        const paymentType = 'Carte di Credito';
-
-        console.log('🔄 Elaborazione transazione:', { description, amount });
-
-        // 2️⃣ Controlla se il record esiste già
-        const { rows } = await fastify.pg.query(`
-                SELECT id, status FROM transactions 
-                WHERE date = $1::date
-                  AND description = $2
-                  AND amount = $3
-                  AND db = $4
-            `, [originalDate, description, amount, db]);
-
-        console.log('🔍 Record trovati:', rows);
-
-        // 3️⃣ Inserisci il record con lo stato appropriato
-        if (rows.length === 0) {
-          // Se non esiste, inserisci con stato 'pending'
-          console.log('➕ Inserimento nuovo record');
-          await fastify.pg.query(`
-            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'pending']);
-        } else {
-          // Se esiste già, inserisci con stato 'toCheck'
-          console.log('♻️ Record duplicato, inserimento con stato toCheck');
-          await fastify.pg.query(`
-            INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [originalDate, description, amount, db, selectRows[0].ownerid, selectRows[0].categoryid, selectRows[0].subjectid, selectRows[0].detailid, '', paymentType, 'toCheck']);
-        }
-      }
-
-      // Dopo aver elaborato tutti i record, controlla la differenza
-      let totalWithCommissions = totalImportedAmount;
-
-      if(commissions) {
-        if(typeof commissions === 'string') {
-          totalWithCommissions += parseFloat(commissions);
-        }else{
-          totalWithCommissions += commissions;
-        }
-      }
-
-      // Arrotonda correttamente per evitare problemi di precisione
-      totalWithCommissions = parseFloat(totalWithCommissions.toFixed(2));
-      const originalAmountRounded = parseFloat(originalAmount.toFixed(2));
-
-      console.log('📊 Dati di calcolo:');
-      console.log('- Importo originale:', originalAmountRounded);
-      console.log('- Totale importato:', totalWithCommissions);
-      console.log('- Di cui commissioni:', commissions ? parseFloat(commissions) : 0);
-
-      // Calcola la differenza in valore assoluto
-      // Nota: gli importi originali e le commissioni sono negativi (spese)
-      const diff = parseFloat((originalAmountRounded - totalWithCommissions).toFixed(2));
-      console.log('- Differenza calcolata:', diff);
-
-      // Per determinare se è rimanenza o compensazione:
-      // - Se l'importo originale è negativo (spesa) e il totale importato è MINORE in valore assoluto
-      //   rispetto all'importo originale → Rimanenza
-      // - Se l'importo originale è negativo (spesa) e il totale importato è MAGGIORE in valore assoluto
-      //   rispetto all'importo originale → Compensazione
-
-      if (diff !== 0) {
-        try {
-          // Se importo originale è negativo (è una spesa)
-          if (originalAmountRounded < 0) {
-            // L'importo originale e il totale importato sono entrambi negativi
-            // Confrontiamo i valori assoluti
-            const absOriginal = Math.abs(originalAmountRounded);
-            const absImported = Math.abs(totalWithCommissions);
-
-            if (absImported < absOriginal) {
-              // Hai speso MENO rispetto all'importo originale → RIMANENZA
-              console.log(`💰 Creazione voce "Rimanenza Carta di Credito" per €${Math.abs(diff)}`);
-
-              const insertQuery = `
-                INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                RETURNING id;
-              `;
-
-              const insertParams = [
-                selectRows[0].date,
-                'Rimanenza Carta di Credito',
-                diff, // Rimanenza è negativa perché è la parte non spesa di una somma già addebitata
-                db,
-                selectRows[0].ownerid,
-                selectRows[0].categoryid,
-                selectRows[0].subjectid,
-                selectRows[0].detailid,
-                'Differenza tra addebito originale e spese effettive sulla carta',
-                'Carte di Credito',
-                'pending'
-              ];
-
-              console.log('🔍 Parametri di inserimento:', JSON.stringify(insertParams));
-
-              const { rows: insertResult } = await fastify.pg.query(insertQuery, insertParams);
-              console.log('✅ Rimanenza inserita con ID:', insertResult[0]?.id);
-            } else {
-              // Hai speso PIÙ rispetto all'importo originale → COMPENSAZIONE
-              const absDiff = Math.abs(diff); // Rendiamo positivo per chiarezza
-              console.log(`💳 Creazione voce "Compensazione da rimanenza carta di credito" per €${absDiff}`);
-
-              const insertQuery = `
-                INSERT INTO transactions (date, description, amount, db, ownerid, categoryid, subjectid, detailid, note, paymenttype, status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                RETURNING id;
-              `;
-
-              const insertParams = [
-                selectRows[0].date,
-                'Compensazione da rimanenza carta di credito',
-                absDiff, // Compensazione è positiva perché bilancia spese in eccesso
-                db,
-                selectRows[0].ownerid,
-                selectRows[0].categoryid,
-                selectRows[0].subjectid,
-                selectRows[0].detailid,
-                'Compensazione per eccesso di spesa rispetto all\'importo originale (utilizzo di residuo precedente)',
-                'Carte di Credito',
-                'pending'
-              ];
-
-              console.log('🔍 Parametri di inserimento:', JSON.stringify(insertParams));
-
-              const { rows: insertResult } = await fastify.pg.query(insertQuery, insertParams);
-              console.log('✅ Compensazione inserita con ID:', insertResult[0]?.id);
-            }
+      // Inizia una transazione per garantire l'atomicità delle operazioni
+      const client = await fastify.pg.connect();
+      
+      try {
+        await client.query('BEGIN');
+        
+        // 1. Crea un record nella tabella import_batches
+        const createBatchQuery = `
+          INSERT INTO import_batches (db, owner_id, category_id, subject_id, detail_id, filename, file_size)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
+          RETURNING id
+        `;
+        
+        const batchValues = [
+          db, 
+          owner, 
+          category, 
+          subject, 
+          details || null, 
+          file.filename || 'imported_file.xlsx', 
+          file.file?.bytesRead || 0
+        ];
+        
+        const batchResult = await client.query(createBatchQuery, batchValues);
+        const batchId = batchResult.rows[0].id;
+        
+        console.log('🆔 Batch di importazione creato con ID:', batchId);
+        
+        // 2. Elabora ogni transazione dal file
+        const transactions = [];
+        
+        for (const transaction of excelToJson) {
+          const { date, description, negativeAmount, positiveAmount, paymentType } = transaction;
+          
+          // Determina l'importo
+          let amount;
+          if (negativeAmount && parseFloat(negativeAmount) !== 0) {
+            amount = parseFloat(negativeAmount);
+          } else if (positiveAmount && parseFloat(positiveAmount) !== 0) {
+            amount = parseFloat(positiveAmount);
           } else {
-            // Per completezza gestiamo anche il caso di importo originale positivo
-            console.log(`⚠️ Importo originale positivo: ${originalAmountRounded}. Gestione non implementata.`);
+            console.warn('⚠️ Transazione senza importo valido, saltata:', transaction);
+            continue;
           }
-        } catch (error) {
-          console.error('❌ Errore nell\'inserimento del record di rimanenza/compensazione:', error);
+          
+          // Determina la data
+          let parsedDate;
+          try {
+            parsedDate = date ? parseDate(date) : new Date();
+          } catch (e) {
+            console.warn('⚠️ Data non valida, utilizzo data odierna:', date);
+            parsedDate = new Date();
+          }
+          
+          // Determina il metodo di pagamento
+          const detectedPaymentType = paymentType || detectPaymentMethod(description) || 'Bonifico';
+          
+          // Inserisci la transazione collegandola al batch
+          const insertQuery = `
+            INSERT INTO transactions (
+              date, description, amount, db, 
+              ownerid, categoryid, subjectid, detailid, 
+              note, paymenttype, status, import_batch_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            RETURNING id
+          `;
+          
+          const insertValues = [
+            parsedDate,
+            description || 'Transazione senza descrizione',
+            amount,
+            db,
+            owner,
+            category,
+            subject,
+            details || null,
+            '',
+            detectedPaymentType,
+            'pending',
+            batchId
+          ];
+          
+          const result = await client.query(insertQuery, insertValues);
+          transactions.push(result.rows[0].id);
+          
+          console.log('➕ Transazione inserita:', result.rows[0].id);
         }
+        
+        await client.query('COMMIT');
+        
+        console.log('✅ Importazione completata con successo! Transazioni create:', transactions.length);
+        
+        reply.send({ 
+          success: true, 
+          message: `Import completed successfully. ${transactions.length} transactions created.`,
+          batchId,
+          transactionCount: transactions.length
+        });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('❌ Errore durante l\'importazione, rollback effettuato:', err);
+        throw err;
+      } finally {
+        client.release();
       }
-
-      // 5️⃣ Dopo aver elaborato tutti i record, aggiorna il record originale
-      console.log('✔️ Aggiornamento record originale (amount = 0, status = \'completed\')');
-      await fastify.pg.query(`
-            UPDATE transactions 
-            SET status = 'completed', amount = 0 
-            WHERE id = $1
-        `, [id]);
-
-      console.log('✅ Importazione completata con successo!');
-      reply.code(200).send({ message: 'Importazione completata con gestione duplicati!' });
-
     } catch (error) {
-      console.error('❌ ERRORE GENERALE:', error);
-      reply.status(500).send({ error: 'Failed to fetch data', details: error.message });
+      console.error('❌ Errore generale durante l\'importazione:', error);
+      reply.status(500).send({ 
+        error: 'Failed to import data', 
+        message: error.message 
+      });
+    }
+  });
+
+  // API per ottenere la cronologia delle importazioni
+  fastify.post('/import-history', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { db, limit = 50, offset = 0 } = request.body;
+
+      // Query per ottenere le importazioni raggruppate per batch
+      const query = `
+        SELECT 
+          i.id,
+          i.created_at as date,
+          i.owner_id,
+          i.category_id,
+          i.subject_id,
+          i.detail_id,
+          o.name as owner_name,
+          c.name as category_name,
+          s.name as subject_name,
+          d.name as detail_name,
+          COUNT(t.id) as transaction_count
+        FROM 
+          import_batches i
+        LEFT JOIN 
+          transactions t ON t.import_batch_id = i.id
+        LEFT JOIN
+          owners o ON i.owner_id = o.id  
+        LEFT JOIN
+          categories c ON i.category_id = c.id
+        LEFT JOIN
+          subjects s ON i.subject_id = s.id
+        LEFT JOIN
+          details d ON i.detail_id = d.id
+        WHERE 
+          i.db = $1
+        GROUP BY 
+          i.id, i.created_at, i.owner_id, i.category_id, i.subject_id, i.detail_id, 
+          o.name, c.name, s.name, d.name
+        ORDER BY 
+          i.created_at DESC
+        LIMIT $2 OFFSET $3
+      `;
+      
+      const countQuery = `
+        SELECT COUNT(*) as total FROM import_batches WHERE db = $1
+      `;
+      
+      const values = [db, limit, offset];
+      const countValues = [db];
+      
+      // Esegui entrambe le query in parallelo
+      const [importResults, countResults] = await Promise.all([
+        fastify.pg.query(query, values),
+        fastify.pg.query(countQuery, countValues)
+      ]);
+      
+      // Trasforma i risultati per renderli più facili da usare nel frontend
+      const imports = importResults.rows.map(row => ({
+        id: row.id,
+        date: row.date,
+        owner: {
+          id: row.owner_id,
+          name: row.owner_name
+        },
+        category: {
+          id: row.category_id,
+          name: row.category_name
+        },
+        subject: {
+          id: row.subject_id,
+          name: row.subject_name
+        },
+        detail: {
+          id: row.detail_id,
+          name: row.detail_name
+        },
+        count: parseInt(row.transaction_count, 10)
+      }));
+      
+      const totalCount = parseInt(countResults.rows[0].total, 10);
+      
+      reply.send({
+        imports,
+        totalCount
+      });
+    } catch (error) {
+      console.error('Error fetching import history:', error);
+      reply.status(500).send({ 
+        error: 'Failed to fetch import history',
+        message: error.message 
+      });
+    }
+  });
+
+  // API per ottenere i dettagli di un'importazione specifica
+  fastify.post('/import-history/details', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { db, importId } = request.body;
+      
+      if (!db || !importId) {
+        return reply.status(400).send({ error: 'Missing required parameters' });
+      }
+      
+      // Query per ottenere tutte le transazioni associate a un batch di importazione
+      const query = `
+        SELECT 
+          t.id,
+          to_char(t.date, 'YYYY-MM-DD') AS date,
+          t.description,
+          t.amount,
+          t.categoryId,
+          t.subjectId,
+          t.detailId,
+          c.name AS category_name,
+          s.name AS subject_name,
+          d.name AS detail_name
+        FROM 
+          transactions t
+        JOIN
+          categories c ON t.categoryId = c.id
+        JOIN
+          subjects s ON t.subjectId = s.id
+        LEFT JOIN
+          details d ON t.detailId = d.id
+        WHERE 
+          t.db = $1 AND t.import_batch_id = $2
+        ORDER BY 
+          t.date DESC
+      `;
+      
+      const values = [db, importId];
+      
+      const { rows } = await fastify.pg.query(query, values);
+      
+      // Trasforma i risultati in un formato più adatto per il frontend
+      const transactions = rows.map(row => ({
+        id: row.id,
+        date: row.date,
+        description: row.description,
+        amount: row.amount,
+        category: {
+          id: row.categoryid,
+          name: row.category_name
+        },
+        subject: {
+          id: row.subjectid,
+          name: row.subject_name
+        },
+        detail: {
+          id: row.detailid,
+          name: row.detail_name
+        }
+      }));
+      
+      reply.send({ transactions });
+    } catch (error) {
+      console.error('Error fetching import details:', error);
+      reply.status(500).send({
+        error: 'Failed to fetch import details',
+        message: error.message
+      });
+    }
+  });
+
+  // API per annullare un'importazione (eliminare tutte le transazioni di un batch)
+  fastify.post('/undo-import', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { db, importId, transactionIds } = request.body;
+      
+      // Verifica che sia stato fornito o l'ID del batch o un array di ID di transazioni
+      if (!db || (!importId && (!transactionIds || transactionIds.length === 0))) {
+        return reply.status(400).send({ error: 'Missing required parameters' });
+      }
+      
+      // Inizia una transazione per garantire l'atomicità delle operazioni
+      const client = await fastify.pg.connect();
+      
+      try {
+        await client.query('BEGIN');
+        
+        let deletedCount = 0;
+        
+        if (importId) {
+          // Elimina tutte le transazioni associate al batch di importazione
+          const deleteDocsQuery = `
+            DELETE FROM documents
+            WHERE transaction_id IN (
+              SELECT id FROM transactions WHERE db = $1 AND import_batch_id = $2
+            )
+          `;
+          
+          const deleteTransactionsQuery = `
+            DELETE FROM transactions
+            WHERE db = $1 AND import_batch_id = $2
+            RETURNING id
+          `;
+          
+          const deleteBatchQuery = `
+            DELETE FROM import_batches
+            WHERE id = $1 AND db = $2
+          `;
+          
+          // Esegui in ordine le eliminazioni per rispettare i vincoli di foreign key
+          await client.query(deleteDocsQuery, [db, importId]);
+          const deleteResult = await client.query(deleteTransactionsQuery, [db, importId]);
+          deletedCount = deleteResult.rowCount;
+          await client.query(deleteBatchQuery, [importId, db]);
+        } else if (transactionIds && transactionIds.length > 0) {
+          // Elimina transazioni specifiche
+          const placeholders = transactionIds.map((_, index) => `$${index + 3}`).join(',');
+          
+          const deleteDocsQuery = `
+            DELETE FROM documents
+            WHERE transaction_id IN (${placeholders})
+          `;
+          
+          const deleteTransactionsQuery = `
+            DELETE FROM transactions
+            WHERE db = $1 AND id IN (${placeholders})
+            RETURNING id
+          `;
+          
+          // Esegui in ordine le eliminazioni
+          await client.query(deleteDocsQuery, [db, ...transactionIds]);
+          const deleteResult = await client.query(deleteTransactionsQuery, [db, ...transactionIds]);
+          deletedCount = deleteResult.rowCount;
+        }
+        
+        await client.query('COMMIT');
+        
+        reply.send({
+          success: true,
+          message: `Import successfully undone. ${deletedCount} transactions deleted.`,
+          deletedCount
+        });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('Error undoing import:', error);
+      reply.status(500).send({
+        error: 'Failed to undo import',
+        message: error.message
+      });
     }
   });
 };
