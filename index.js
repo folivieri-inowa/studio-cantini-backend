@@ -13,6 +13,7 @@ import {
   ReportRoutes,
   SubjectRoutes,
   TransactionRoutes,
+  TransactionImportAssociatedRoutes,
   UploadRoutes,
 } from './routes/index.js';
 // Migrazione database
@@ -46,6 +47,7 @@ fastify.register(CategoryRoutes, { prefix: '/v1/category' })
 fastify.register(SubjectRoutes, { prefix: '/v1/subject' })
 fastify.register(DetailRoutes, { prefix: '/v1/detail' })
 fastify.register(TransactionRoutes, { prefix: '/v1/transaction' })
+fastify.register(TransactionImportAssociatedRoutes, { prefix: '/v1/transaction' })
 fastify.register(ReportRoutes, { prefix: '/v1/report' })
 fastify.register(UploadRoutes, { prefix: '/v1/upload' })
 fastify.register(FileManagerRoutes, { prefix: '/v1/file-manager' })

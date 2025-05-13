@@ -861,8 +861,179 @@ const transaction = async (fastify) => {
     }
   });
 
-  // L'endpoint per importare un file Excel e associare i movimenti ad una transazione esistente
-  // è stato spostato in transaction-import-associated.js
+  // Endpoint per importare un file Excel e associare i movimenti ad una transazione esistente
+  fastify.post('/import/associated', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      console.log('📂 Inizio importazione associativa...');
+      
+      const file = await request.file();
+      const bufferedFile = await file.toBuffer();
+      console.log('✅ File ricevuto!');
+
+      const { db, id, commissions } = JSON.parse(file.fields.metadata.value);
+      console.log('📊 Metadata ricevuti:', { db, id, commissions });
+
+      // Verifica che la transazione principale esista
+      const checkQuery = 'SELECT * FROM transactions WHERE id = $1 AND db = $2';
+      const checkValues = [id, db];
+      const checkResult = await fastify.pg.query(checkQuery, checkValues);
+      
+      if (checkResult.rowCount === 0) {
+        console.warn('⚠️ Transazione principale non trovata!');
+        return reply.status(404).send({ error: 'Transazione principale non trovata' });
+      }
+
+      const parentTransaction = checkResult.rows[0];
+      console.log('✓ Transazione principale trovata:', parentTransaction.id);
+
+      // Estrae i dati dal file Excel
+      const excelToJson = ConvertExcelToJson(bufferedFile);
+      console.log('📋 Dati estratti dal file:', excelToJson);
+
+      if (!excelToJson || excelToJson.length === 0) {
+        console.warn('⚠️ Nessun dato estratto dal file!');
+        return reply.status(400).send({ error: 'Il file non contiene transazioni valide' });
+      }
+
+      // Inizia una transazione per garantire l'atomicità delle operazioni
+      const client = await fastify.pg.connect();
+      
+      try {
+        await client.query('BEGIN');
+        
+        // 1. Crea un record nella tabella import_batches
+        const createBatchQuery = `
+          INSERT INTO import_batches (db, owner_id, category_id, subject_id, detail_id, filename, file_size, parent_transaction_id)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid)
+          RETURNING id
+        `;
+        
+        const batchValues = [
+          db, 
+          parentTransaction.ownerid, 
+          parentTransaction.categoryid, 
+          parentTransaction.subjectid, 
+          parentTransaction.detailid || null, 
+          file.filename, 
+          file.file.bytesRead,
+          parentTransaction.id
+        ];
+        
+        const batchResult = await client.query(createBatchQuery, batchValues);
+        const batchId = batchResult.rows[0].id;
+        
+        console.log('🆔 Batch di importazione associata creato con ID:', batchId);
+        
+        // 2. Elabora ogni transazione dal file
+        const transactions = [];
+        let totalImportedAmount = 0;
+        
+        for (const transaction of excelToJson) {
+          const { date, description, negativeAmount, positiveAmount, paymentType } = transaction;
+          
+          // Determina l'importo
+          let amount;
+          if (negativeAmount && parseFloat(negativeAmount) !== 0) {
+            amount = parseFloat(negativeAmount);
+          } else if (positiveAmount && parseFloat(positiveAmount) !== 0) {
+            amount = parseFloat(positiveAmount);
+          } else {
+            console.warn('⚠️ Transazione senza importo valido, saltata:', transaction);
+            continue;
+          }
+          
+          // Usa sempre la data della transazione principale per le commissioni associate
+          const parsedDate = parentTransaction.date;
+          
+          // Determina il metodo di pagamento
+          const detectedPaymentType = paymentType || parentTransaction.paymenttype || detectPaymentMethod(description) || 'Bonifico';
+          
+          // Inserisci la transazione collegandola al batch e alla transazione principale
+          const insertQuery = `
+            INSERT INTO transactions (
+              date, description, amount, db, 
+              ownerid, categoryid, subjectid, detailid, 
+              note, paymenttype, status, import_batch_id, parent_transaction_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::uuid)
+            RETURNING id
+          `;
+          
+          const insertValues = [
+            parsedDate,
+            description || 'Commissione associata',
+            amount,
+            db,
+            parentTransaction.ownerid,
+            parentTransaction.categoryid,
+            parentTransaction.subjectid,
+            parentTransaction.detailid || null,
+            `Commissione associata alla transazione ${parentTransaction.id}`,
+            detectedPaymentType,
+            'pending',
+            batchId,
+            parentTransaction.id
+          ];
+          
+          const result = await client.query(insertQuery, insertValues);
+          transactions.push(result.rows[0].id);
+          totalImportedAmount += amount;
+          
+          console.log('➕ Commissione inserita:', result.rows[0].id);
+        }
+        
+        // Verifica che il totale importato corrisponda alla transazione principale
+        const parentAmount = Math.abs(parseFloat(parentTransaction.amount));
+        const totalAmount = Math.abs(totalImportedAmount);
+        
+        console.log(`📊 Importo transazione principale: ${parentAmount}`);
+        console.log(`📊 Importo totale commissioni: ${totalAmount}`);
+        
+        // Calcola la differenza percentuale tra i due importi
+        const difference = Math.abs(parentAmount - totalAmount);
+        const percentageDifference = (difference / parentAmount) * 100;
+        
+        if (percentageDifference > 5) {
+          console.warn(`⚠️ La differenza tra l'importo della transazione principale (${parentAmount}) e il totale delle commissioni (${totalAmount}) è superiore al 5% (${percentageDifference.toFixed(2)}%)`);
+        } else {
+          console.log(`✅ Differenza importo accettabile: ${percentageDifference.toFixed(2)}%`);
+        }
+        
+        await client.query('COMMIT');
+        
+        console.log('✅ Importazione associativa completata con successo! Commissioni create:', transactions.length);
+        
+        reply.send({ 
+          success: true, 
+          message: `Import associated transactions completed successfully. ${transactions.length} transactions created.`,
+          batchId,
+          transactionCount: transactions.length,
+          amountComparison: {
+            parentAmount,
+            totalAmount,
+            difference,
+            percentageDifference,
+            isWithinThreshold: percentageDifference <= 5
+          }
+        });
+            isWithinThreshold: percentageDifference <= 5
+          }
+        });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        console.error('❌ Errore durante l\'importazione associativa, rollback effettuato:', err);
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('❌ Errore generale durante l\'importazione associativa:', error);
+      reply.status(500).send({ 
+        error: 'Failed to import associated data', 
+        message: error.message 
+      });
+    }
+  });
 };
 
 export default transaction;
