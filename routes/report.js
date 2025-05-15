@@ -11,7 +11,8 @@ const report = async (fastify) => {
           cc, 
           iban, 
           initialbalance as "initialBalance",
-          "date" as balanceDate
+          "date" as balanceDate,
+          is_credit_card as "isCreditCard"
         FROM 
           owners
         WHERE 
@@ -23,7 +24,8 @@ const report = async (fastify) => {
       ownersData.forEach(owner => {
         ownerMap[owner.id] = {
           initialBalance: parseFloat(owner.initialBalance || 0),
-          balanceDate: owner.balanceDate
+          balanceDate: owner.balanceDate,
+          isCreditCard: owner.isCreditCard || false
         };
       });
 
@@ -72,6 +74,7 @@ const report = async (fastify) => {
             iban: tx.iban || null,
             initialBalance: ownerMap[ownerId]?.initialBalance || 0,
             balanceDate: ownerMap[ownerId]?.balanceDate || null,
+            isCreditCard: ownerMap[ownerId]?.isCreditCard || false,
             report: {
               years: new Set(),
               globalReport: {},

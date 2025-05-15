@@ -18,6 +18,8 @@ import {
 } from './routes/index.js';
 // Migrazione database
 import { runMigrations } from './lib/migrations.js';
+// Verifica schema database
+import verifyDatabaseSchema from './lib/verifyDatabaseSchema.js';
 
 // Load environment variables from .env file
 dotenv.config();
@@ -74,6 +76,10 @@ const start = async () => {
     // Esegui le migrazioni del database prima di avviare il server
     console.log('Esecuzione delle migrazioni del database...');
     await runMigrations(fastify);
+    
+    // Verifica ed eventualmente correggi lo schema del database
+    console.log('Verifica dello schema del database...');
+    await verifyDatabaseSchema(fastify);
     
     // Avvia il server dopo aver completato le migrazioni
     if (process.env.PROD) {

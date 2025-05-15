@@ -7,7 +7,7 @@ const owner = async (fastify) => {
     try {
       // Fetch owners from the PostgreSQL database where db matches the input
       // e rinomina il campo "date" in "balanceDate" per il frontend
-      const ownersQuery = 'SELECT id, db, name, cc, iban, initialbalance as "initialBalance", "date" as "balanceDate" FROM owners WHERE db = $1';
+      const ownersQuery = 'SELECT id, db, name, cc, iban, initialbalance as "initialBalance", "date" as "balanceDate", is_credit_card as "isCreditCard", email FROM owners WHERE db = $1';
       const { rows: ownersRows } = await fastify.pg.query(ownersQuery, [db]);
 
       reply.send(ownersRows);
@@ -19,14 +19,14 @@ const owner = async (fastify) => {
 
   fastify.post('/create', { preHandler: fastify.authenticate }, async (request, reply) => {
     try {
-      const { db, name, cc, iban, initialBalance, balanceDate } = request.body;
+      const { db, name, cc, iban, initialBalance, balanceDate, isCreditCard, email } = request.body;
 
       const query = `
-        INSERT INTO owners (db, name, cc, iban, initialbalance, "date")
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO owners (db, name, cc, iban, initialbalance, "date", is_credit_card, email)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *;
       `;
-      const values = [db, name, cc, iban, initialBalance || 0, balanceDate || null];
+      const values = [db, name, cc, iban, initialBalance || 0, balanceDate || null, isCreditCard || false, email || null];
 
       const { rows } = await fastify.pg.query(query, values);
       const newOwner = rows[0];
@@ -54,6 +54,13 @@ const owner = async (fastify) => {
         // Rinomina la chiave per utilizzare "date" nel database
         updateData['"date"'] = updateData.balanceDate;
         delete updateData.balanceDate;
+      }
+      
+      // Gestione del campo isCreditCard -> is_credit_card nel database
+      if ('isCreditCard' in updateData) {
+        // Rinomina la chiave per adattarla al nome della colonna nel database
+        updateData.is_credit_card = updateData.isCreditCard;
+        delete updateData.isCreditCard;
       }
 
       const updateFields = Object.keys(updateData).map((key, index) => `${key} = $${index + 2}`).join(', ');
