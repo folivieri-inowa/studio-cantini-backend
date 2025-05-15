@@ -346,12 +346,28 @@ const report = async (fastify) => {
           // Add detail to values if not already present
           if (tx.detailid) {
             const detailId = tx.detailid;
+            const txYear = txDate.getFullYear();
+            const currentYearValue = parseInt(year);
+            
+            // Aggiungiamo il dettaglio solo se:
+            // 1. Non è già presente nella lista
+            // 2. È dell'anno corrente (non dell'anno precedente)
+            // Oppure se è dell'anno precedente ma vogliamo mantenere questa funzionalità,
+            // possiamo aggiungere una flag per indicare che è dell'anno precedente
             if (!report.subcategories[subjectId].values.some(v => v.id === detailId)) {
               report.subcategories[subjectId].values.push({
                 id: detailId,
                 title: tx.detail_name,
                 detailsId: detailId,
+                hasCurrentYearTransactions: txYear === currentYearValue // Indica se il dettaglio ha transazioni nell'anno corrente
               });
+            } else if (txYear === currentYearValue) {
+              // Se il dettaglio esiste già ma questa transazione è dell'anno corrente,
+              // aggiorniamo la flag per indicare che ha transazioni nell'anno corrente
+              const existingDetail = report.subcategories[subjectId].values.find(v => v.id === detailId);
+              if (existingDetail) {
+                existingDetail.hasCurrentYearTransactions = true;
+              }
             }
           }
         }
@@ -389,12 +405,22 @@ const report = async (fastify) => {
         const totalExpenseCost = totalExpense.toFixed(2);
 
         // Process details (values)
-        subject.values = subject.values.map(value => {
+        // Filtriamo i dettagli per includere solo quelli con transazioni nell'anno corrente
+        const filteredValues = subject.values.filter(value => value.hasCurrentYearTransactions === true);
+        
+        // Aggiorniamo i values con i dettagli filtrati e calcolati
+        subject.values = filteredValues.map(value => {
+          // Filtra le transazioni relative a questo dettaglio specifico
           const relatedTransactions = transactions.filter(tx =>
             tx.detailid === value.id &&
             parseFloat(tx.amount) < 0 &&
             new Date(tx.date).getFullYear() === parseInt(year),
           );
+
+          // Log per debug se non ci sono transazioni per questo dettaglio
+          if (relatedTransactions.length === 0) {
+            console.log(`Nessuna transazione trovata per il dettaglio ${value.title} (ID: ${value.id}) nell'anno ${year}`);
+          }
 
           const totalExpense = relatedTransactions.reduce(
             (sum, tx) => sum + parseFloat(Math.abs(parseFloat(tx.amount)).toFixed(2)), 0,
@@ -411,6 +437,11 @@ const report = async (fastify) => {
           // Calculate average based on all months until the last transaction month
           // Arrotondiamo per maggiore precisione
           const avgCost = monthsCount > 0 ? parseFloat((totalExpense / monthsCount).toFixed(2)) : 0;
+
+          // Per debugging, log dei valori calcolati
+          if (totalExpense > 0) {
+            console.log(`Dettaglio ${value.title}: Totale spese ${totalExpense.toFixed(2)}, Media ${avgCost.toFixed(2)} (su ${monthsCount} mesi)`);
+          }
 
           return {
             ...value,
@@ -506,11 +537,16 @@ const report = async (fastify) => {
           t.detailid,
           d.name AS detail_name,
           EXTRACT(MONTH FROM t.date) AS month,
-          EXTRACT(YEAR FROM t.date) AS year
+          EXTRACT(YEAR FROM t.date) AS year,
+          t.ownerid,
+          o.name AS owner_name,
+          o.cc AS owner_cc
         FROM
           transactions t
         LEFT JOIN
           details d ON t.detailid = d.id
+        LEFT JOIN
+          owners o ON t.ownerid = o.id
         WHERE
           t.db = $1
           AND t.ownerid = $2
@@ -519,6 +555,7 @@ const report = async (fastify) => {
           AND t.detailid = $5
           AND t.date >= $6
           AND t.date <= $7
+        ORDER BY t.date DESC
         `, [db, owner, category, subject, details, startDatePrevious, endDateCurrent]);
 
         transactions = ownerTransactions;
@@ -550,12 +587,22 @@ const report = async (fastify) => {
       // Process transactions
       let currentYearExpenses = 0;
       let lastExpenseMonth = 0;
+      
+      // Mappa per tenere traccia di date di transazione per mese 
+      // (per calcoli più accurati di media e totale)
+      const transactionDates = [];
 
       transactions.forEach(tx => {
         const month = parseInt(tx.month);
         const txYear = parseInt(tx.year);
         const amount = parseFloat(tx.amount) || 0;
         const isPrevYear = txYear === previousYear;
+        
+        // Registra la data della transazione per l'anno corrente (serve per calcoli statistici)
+        if (!isPrevYear && amount < 0) {
+          const txDate = new Date(tx.date);
+          transactionDates.push(txDate);
+        }
 
         // Aggregate income and expenses
         if (amount > 0) {
@@ -583,16 +630,28 @@ const report = async (fastify) => {
         }
       });
 
-      // Calculate average monthly expense
-      // Divide by the number of months from January to the last month with a transaction
+      // Se non ci sono transazioni, imposta adeguatamente i valori
+      if (transactionDates.length === 0) {
+        console.log(`Nessuna transazione trovata per il dettaglio ${detailInfo[0].name} (ID: ${details}) nell'anno ${currentYear}`);
+      } else {
+        console.log(`Trovate ${transactionDates.length} transazioni per il dettaglio ${detailInfo[0].name} nell'anno ${currentYear}`);
+      }
+
+      // Calcola il mese dell'ultima transazione
+      const lastMonthWithTransaction = lastExpenseMonth > 0 ? lastExpenseMonth : 0;
+
+      // Calcola la media mensile e il totale annuale delle spese
       const currentYearExpensesRounded = parseFloat(currentYearExpenses.toFixed(2));
-      const avgMonthlyExpense = lastExpenseMonth > 0 
-        ? parseFloat((currentYearExpensesRounded / lastExpenseMonth).toFixed(2)) 
+      const avgMonthlyExpense = lastMonthWithTransaction > 0 
+        ? parseFloat((currentYearExpensesRounded / lastMonthWithTransaction).toFixed(2)) 
         : 0;
 
       // Update the details object with calculated values
       report.details.averageCost = avgMonthlyExpense.toFixed(2);
       report.details.totalExpense = currentYearExpensesRounded.toFixed(2);
+
+      // Log per debug
+      console.log(`Dettaglio '${detailInfo[0].name}': Totale spese ${currentYearExpensesRounded.toFixed(2)}, Media ${avgMonthlyExpense.toFixed(2)} (su ${lastMonthWithTransaction} mesi)`);
 
       reply.send(report);
     } catch (error) {
