@@ -417,6 +417,13 @@ const report = async (fastify) => {
             new Date(tx.date).getFullYear() === parseInt(year),
           );
 
+          // Filtra le transazioni di entrata relative a questo dettaglio specifico
+          const relatedIncomeTransactions = transactions.filter(tx =>
+            tx.detailid === value.id &&
+            parseFloat(tx.amount) > 0 &&
+            new Date(tx.date).getFullYear() === parseInt(year),
+          );
+
           // Log per debug se non ci sono transazioni per questo dettaglio
           if (relatedTransactions.length === 0) {
             console.log(`Nessuna transazione trovata per il dettaglio ${value.title} (ID: ${value.id}) nell'anno ${year}`);
@@ -424,6 +431,11 @@ const report = async (fastify) => {
 
           const totalExpense = relatedTransactions.reduce(
             (sum, tx) => sum + parseFloat(Math.abs(parseFloat(tx.amount)).toFixed(2)), 0,
+          );
+
+          // Calcola il totale delle entrate per questo dettaglio
+          const totalIncome = relatedIncomeTransactions.reduce(
+            (sum, tx) => sum + parseFloat(parseFloat(tx.amount).toFixed(2)), 0,
           );
 
           // Get the last month with a transaction for this detail
@@ -447,6 +459,7 @@ const report = async (fastify) => {
             ...value,
             averageCost: avgCost.toFixed(2),
             totalExpense: totalExpense.toFixed(2),
+            totalIncome: totalIncome.toFixed(2),
           };
         });
 
@@ -455,6 +468,7 @@ const report = async (fastify) => {
           category: subject.title,
           averageCost: averageCost.toFixed(2),
           totalExpense: totalExpenseCost,
+          totalIncome: subject.totalIncome.toFixed(2),
           values: subject.values,
         });
 
