@@ -6,6 +6,7 @@ import fastifyPostgres from '@fastify/postgres';
 // Routes
 import {
   AuthRoutes,
+  DatabaseRoutes,
   CategoryRoutes,
   DetailRoutes,
   FileManagerRoutes,
@@ -52,6 +53,7 @@ fastify.register(fastifyMultipart);
 
 // Declare a routes
 fastify.register(AuthRoutes, { prefix: '/v1/auth' })
+fastify.register(DatabaseRoutes, { prefix: '/v1/databases' })
 fastify.register(OwnerRoutes, { prefix: '/v1/owner' })
 fastify.register(CategoryRoutes, { prefix: '/v1/category' })
 fastify.register(SubjectRoutes, { prefix: '/v1/subject' })

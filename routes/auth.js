@@ -138,39 +138,238 @@ const auth = async (fastify) => {
     reply.send({ user: updatedUser });
   });
 
-  /*
-  fastify.get('/newRole', async (request, reply) => {
-    // http://localhost:9000/v1/auth/newRole?email=f.olivieri@inowa.it&role=admin&db=guido_cantini
-    const data = request.query
-
-    const user = await User.findOne({ email: data.email })
-
-    if (!user) {
-      return reply.code(400).send({ message: 'Utente non trovato', status: 400 });
-    }
-
-    let role = await Role.findOne({ db: data.db, 'roleAccess.user': user._id });
-
-    if (role) {
-      // Update the existing role
-      role.roleAccess = role.roleAccess.map(access =>
-        access.user.equals(user._id) ? { user: user._id, role: data.role } : access
-      );
-    } else {
-      // Check if a role associated with the db exists
-      role = await Role.findOne({ db: data.db });
-
-      if (role) {
-        // Add the user and role to the existing role's roleAccess array
-        role.roleAccess.push({ user: user._id, role: data.role });
-      } else {
-        // Create a new role
-        role = new Role({ db: data.db, roleAccess: [{ user: user._id, role: data.role }] });
+  // Ottieni i ruoli di un utente per tutti i database - richiede autenticazione
+  fastify.get('/user-roles/:userId', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { userId } = request.params;
+      
+      const query = `
+        SELECT u.id, u.email, u.firstName, u.lastName, u.dbrole,
+               json_agg(
+                 json_build_object(
+                   'db_key', d.db_key,
+                   'db_name', d.db_name,
+                   'role', (
+                     SELECT (role_data->>'role')::text
+                     FROM jsonb_array_elements(u.dbrole) AS role_data
+                     WHERE role_data->>'db' = d.db_key
+                   )
+                 )
+               ) as user_roles
+        FROM users u
+        CROSS JOIN databases d
+        WHERE u.id = $1 AND d.is_active = true
+        GROUP BY u.id, u.email, u.firstName, u.lastName, u.dbrole
+      `;
+      
+      const { rows } = await fastify.pg.query(query, [userId]);
+      
+      if (rows.length === 0) {
+        return reply.code(404).send({
+          success: false,
+          message: 'Utente non trovato'
+        });
       }
+      
+      const user = rows[0];
+      reply.send({
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          roles: user.user_roles.filter(role => role.role !== null)
+        }
+      });
+    } catch (error) {
+      console.error('Errore nel recupero dei ruoli utente:', error);
+      reply.code(500).send({ 
+        success: false, 
+        message: 'Errore nel recupero dei ruoli utente' 
+      });
     }
+  });
 
-    await role.save(); // Ensure the role is saved *!/
-    reply.send(role);
-  }) */
+  // Aggiorna i ruoli di un utente - richiede autenticazione e ruolo admin
+  fastify.put('/user-roles/:userId', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { userId } = request.params;
+      const { roles } = request.body; // Array di {db_key, role}
+      
+      if (!Array.isArray(roles)) {
+        return reply.code(400).send({
+          success: false,
+          message: 'Il campo roles deve essere un array'
+        });
+      }
+
+      // Verifica che tutti i database esistano
+      const dbKeys = roles.map(r => r.db_key);
+      const dbQuery = 'SELECT db_key FROM databases WHERE db_key = ANY($1) AND is_active = true';
+      const { rows: dbRows } = await fastify.pg.query(dbQuery, [dbKeys]);
+      
+      if (dbRows.length !== dbKeys.length) {
+        const existingKeys = dbRows.map(r => r.db_key);
+        const missingKeys = dbKeys.filter(key => !existingKeys.includes(key));
+        return reply.code(400).send({
+          success: false,
+          message: `Database non trovati: ${missingKeys.join(', ')}`
+        });
+      }
+
+      // Converte i ruoli nel formato JSON atteso
+      const dbroleJson = roles.map(role => ({
+        db: role.db_key,
+        role: role.role
+      }));
+
+      const updateQuery = `
+        UPDATE users 
+        SET dbrole = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        RETURNING id, email, firstName, lastName, dbrole
+      `;
+      
+      const { rows } = await fastify.pg.query(updateQuery, [JSON.stringify(dbroleJson), userId]);
+      
+      if (rows.length === 0) {
+        return reply.code(404).send({
+          success: false,
+          message: 'Utente non trovato'
+        });
+      }
+      
+      reply.send({
+        success: true,
+        message: 'Ruoli utente aggiornati con successo',
+        user: rows[0]
+      });
+    } catch (error) {
+      console.error('Errore nell\'aggiornamento dei ruoli utente:', error);
+      reply.code(500).send({ 
+        success: false, 
+        message: 'Errore nell\'aggiornamento dei ruoli utente' 
+      });
+    }
+  });
+
+  // Aggiungi un ruolo a un utente per un database specifico - richiede autenticazione e ruolo admin
+  fastify.post('/user-roles/:userId/add', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { userId } = request.params;
+      const { db_key, role } = request.body;
+      
+      if (!db_key || !role) {
+        return reply.code(400).send({
+          success: false,
+          message: 'db_key e role sono obbligatori'
+        });
+      }
+
+      // Verifica che il database esista
+      const dbQuery = 'SELECT db_key FROM databases WHERE db_key = $1 AND is_active = true';
+      const { rows: dbRows } = await fastify.pg.query(dbQuery, [db_key]);
+      
+      if (dbRows.length === 0) {
+        return reply.code(400).send({
+          success: false,
+          message: 'Database non trovato o non attivo'
+        });
+      }
+
+      // Ottieni i ruoli attuali dell'utente
+      const userQuery = 'SELECT dbrole FROM users WHERE id = $1';
+      const { rows: userRows } = await fastify.pg.query(userQuery, [userId]);
+      
+      if (userRows.length === 0) {
+        return reply.code(404).send({
+          success: false,
+          message: 'Utente non trovato'
+        });
+      }
+
+      let currentRoles = userRows[0].dbrole || [];
+      
+      // Rimuovi il ruolo esistente per questo database se presente
+      currentRoles = currentRoles.filter(r => r.db !== db_key);
+      
+      // Aggiungi il nuovo ruolo
+      currentRoles.push({ db: db_key, role });
+
+      const updateQuery = `
+        UPDATE users 
+        SET dbrole = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        RETURNING id, email, firstName, lastName, dbrole
+      `;
+      
+      const { rows } = await fastify.pg.query(updateQuery, [JSON.stringify(currentRoles), userId]);
+      
+      reply.send({
+        success: true,
+        message: 'Ruolo aggiunto con successo',
+        user: rows[0]
+      });
+    } catch (error) {
+      console.error('Errore nell\'aggiunta del ruolo:', error);
+      reply.code(500).send({ 
+        success: false, 
+        message: 'Errore nell\'aggiunta del ruolo' 
+      });
+    }
+  });
+
+  // Rimuovi un ruolo di un utente per un database specifico - richiede autenticazione e ruolo admin
+  fastify.delete('/user-roles/:userId/remove/:dbKey', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { userId, dbKey } = request.params;
+      
+      // Ottieni i ruoli attuali dell'utente
+      const userQuery = 'SELECT dbrole FROM users WHERE id = $1';
+      const { rows: userRows } = await fastify.pg.query(userQuery, [userId]);
+      
+      if (userRows.length === 0) {
+        return reply.code(404).send({
+          success: false,
+          message: 'Utente non trovato'
+        });
+      }
+
+      let currentRoles = userRows[0].dbrole || [];
+      
+      // Rimuovi il ruolo per questo database
+      const originalLength = currentRoles.length;
+      currentRoles = currentRoles.filter(r => r.db !== dbKey);
+      
+      if (currentRoles.length === originalLength) {
+        return reply.code(404).send({
+          success: false,
+          message: 'Ruolo non trovato per questo database'
+        });
+      }
+
+      const updateQuery = `
+        UPDATE users 
+        SET dbrole = $1, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+        RETURNING id, email, firstName, lastName, dbrole
+      `;
+      
+      const { rows } = await fastify.pg.query(updateQuery, [JSON.stringify(currentRoles), userId]);
+      
+      reply.send({
+        success: true,
+        message: 'Ruolo rimosso con successo',
+        user: rows[0]
+      });
+    } catch (error) {
+      console.error('Errore nella rimozione del ruolo:', error);
+      reply.code(500).send({ 
+        success: false, 
+        message: 'Errore nella rimozione del ruolo' 
+      });
+    }
+  });
 }
 export default auth;

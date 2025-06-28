@@ -1,4 +1,5 @@
 export { default as AuthRoutes } from './auth.js'
+export { default as DatabaseRoutes } from './databases.js'
 export { default as OwnerRoutes } from './owner.js'
 export { default as CategoryRoutes } from './category.js'
 export { default as SubjectRoutes } from './subject.js'
