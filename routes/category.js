@@ -1,4 +1,43 @@
 const category = async (fastify) => {
+  
+  // Endpoint di test per verificare la tabella users
+  fastify.get('/test-users', async (request, reply) => {
+    try {
+      // Verifica se la tabella users esiste
+      const tableCheck = await fastify.pg.query(`
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'users'
+      `);
+      
+      if (tableCheck.rows.length === 0) {
+        return reply.send({
+          success: false,
+          message: 'Tabella users non esiste'
+        });
+      }
+      
+      // Conta gli utenti
+      const userCount = await fastify.pg.query('SELECT COUNT(*) as count FROM users');
+      
+      // Elenca gli utenti (senza password)
+      const users = await fastify.pg.query('SELECT id, email, firstName, lastName, created_at FROM users');
+      
+      reply.send({
+        success: true,
+        message: 'Tabella users esiste',
+        count: userCount.rows[0].count,
+        users: users.rows
+      });
+      
+    } catch (error) {
+      reply.status(500).send({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
   fastify.get('/:db', { preHandler: fastify.authenticate }, async (request, reply) => {
     const db = request.params.db;
 

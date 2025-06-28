@@ -8,3 +8,6 @@ export { default as TransactionImportAssociatedRoutes } from './transaction-impo
 export { default as ReportRoutes } from './report.js'
 export { default as UploadRoutes } from './upload.js'
 export { default as FileManagerRoutes} from './fileManager.js'
+export { default as ScadenziarioRoutes } from './scadenziario.js'
+// export { default as SetupRoutes } from './setup.js'
+// export { default as MLAnalysisRoutes } from './ml-analysis.js'

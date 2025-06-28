@@ -382,13 +382,22 @@ const transaction = async (fastify) => {
 
       const insertQuery = `
         INSERT INTO transactions (db, amount, categoryId, subjectId, detailId, ownerId, date, description,  note, paymenttype, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
         RETURNING *;
       `;
 
-      const insertValues = [db, amount, category, subject, details, owner, date, description, note, paymentType, status];
+      const insertValues = [db, amount, category, subject, details, owner, date, description, note, paymentType];
 
       await fastify.pg.query(insertQuery, insertValues);
+      
+      // Aggiorna lo stato della transazione originale a pending
+      const updateStatusQuery = `
+        UPDATE transactions
+        SET status = 'pending'
+        WHERE id = $1 AND db = $2
+      `;
+      
+      await fastify.pg.query(updateStatusQuery, [id, db]);
 
       reply.send({ message: 'Record inserito correttamente' }).code(200);
     } catch (error) {
@@ -631,11 +640,11 @@ const transaction = async (fastify) => {
           c.name as category_name,
           s.name as subject_name,
           d.name as detail_name,
-          COUNT(t.id) as transaction_count
+          0 as transaction_count
         FROM 
           import_batches i
         LEFT JOIN 
-          transactions t ON t.import_batch_id = i.id
+          transactions t ON false -- Temporaneamente disabilitato perché la colonna import_batch_id non esiste
         LEFT JOIN
           owners o ON i.owner_id = o.id  
         LEFT JOIN

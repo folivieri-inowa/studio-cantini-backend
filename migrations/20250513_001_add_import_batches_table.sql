@@ -16,8 +16,8 @@ CREATE TABLE IF NOT EXISTS import_batches (
   FOREIGN KEY (owner_id) REFERENCES owners(id),
   FOREIGN KEY (category_id) REFERENCES categories(id),
   FOREIGN KEY (subject_id) REFERENCES subjects(id),
-  FOREIGN KEY (detail_id) REFERENCES details(id),
-  FOREIGN KEY (created_by) REFERENCES users(id)
+  FOREIGN KEY (detail_id) REFERENCES details(id)
+  -- FOREIGN KEY (created_by) REFERENCES users(id) -- Rimossa temporaneamente
 );
 
 -- Aggiunta della colonna import_batch_id alla tabella transactions

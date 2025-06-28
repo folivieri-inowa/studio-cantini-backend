@@ -9,8 +9,11 @@ import {
   CategoryRoutes,
   DetailRoutes,
   FileManagerRoutes,
+  // MLAnalysisRoutes,
   OwnerRoutes,
   ReportRoutes,
+  // SetupRoutes,
+  ScadenziarioRoutes,
   SubjectRoutes,
   TransactionRoutes,
   TransactionImportAssociatedRoutes,
@@ -26,6 +29,11 @@ dotenv.config();
 
 // Require the framework and instantiate it
 const fastify = Fastify({ logger: false });
+
+// Health check endpoint
+fastify.get('/health', async (request, reply) => {
+  return { status: 'ok', timestamp: new Date().toISOString() };
+});
 
 fastify.register(fastifyPostgres, {
   promise: true, // Usa le promise invece dei callback
@@ -53,6 +61,9 @@ fastify.register(TransactionImportAssociatedRoutes, { prefix: '/v1/transaction' 
 fastify.register(ReportRoutes, { prefix: '/v1/report' })
 fastify.register(UploadRoutes, { prefix: '/v1/upload' })
 fastify.register(FileManagerRoutes, { prefix: '/v1/file-manager' })
+fastify.register(ScadenziarioRoutes, { prefix: '/v1/scadenziario' })
+// fastify.register(SetupRoutes, { prefix: '/v1/setup' })
+// fastify.register(MLAnalysisRoutes, { prefix: '/v1/ml-analysis' })
 
 fastify.get('/', async (request, reply) => {
   reply.send({ message: 'Hello World' });
@@ -74,11 +85,11 @@ const start = async () => {
     await fastify.ready();
     
     // Esegui le migrazioni del database prima di avviare il server
-    console.log('Esecuzione delle migrazioni del database...');
+    console.log('🔄 Esecuzione delle migrazioni del database...');
     await runMigrations(fastify);
     
     // Verifica ed eventualmente correggi lo schema del database
-    console.log('Verifica dello schema del database...');
+    console.log('🔍 Verifica dello schema del database...');
     await verifyDatabaseSchema(fastify);
     
     // Avvia il server dopo aver completato le migrazioni
@@ -89,9 +100,9 @@ const start = async () => {
       console.log('Run in development');
       await fastify.listen({ port: process.env.PORT });
     }
-    console.log(`Server listening on ${fastify.server.address().port}`);
+    console.log(`✅ Server listening on ${fastify.server.address().port}`);
   } catch (err) {
-    console.error('Errore durante l\'avvio del server:', err);
+    console.error('❌ Errore durante l\'avvio del server:', err);
     process.exit(1);
   }
 };
