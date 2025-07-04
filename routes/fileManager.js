@@ -7,7 +7,7 @@ const fileManager = async (fastify) => {
     try {
       return str ? decodeURIComponent(str) : null;
     } catch (e) {
-      console.error('Errore nella decodifica del percorso:', e);
+      // console.error('Errore nella decodifica del percorso:', e);
       return str; // Ritorna la stringa originale in caso di errore
     }
   };
@@ -32,26 +32,21 @@ const fileManager = async (fastify) => {
   // Funzione per ottenere i file da Minio
   const getDataFromMinio = (bucketName) => {
     return new Promise((resolve, reject) => {
-      console.log(`Recupero file dal bucket: ${bucketName}`);
       const minioClient = getMinioClient();
       const data = [];
       const stream = minioClient.listObjectsV2(bucketName, '', true);
 
       stream.on('data', (obj) => {
-        console.log(`File trovato in Minio: ${obj.name}, size: ${obj.size}`);
         data.push(obj);
       });
 
       stream.on('end', () => {
-        console.log(`Totale file trovati in Minio: ${data.length}`);
-        if (data.length === 0) {
-          console.log(`ATTENZIONE: Nessun file trovato nel bucket ${bucketName}!`);
-        }
+        // // console.log(`📁 Totale file trovati nel bucket ${bucketName}: ${data.length}`);
         resolve(data);
       });
 
       stream.on('error', (err) => {
-        console.error(`Errore durante il recupero dei file dal bucket ${bucketName}:`, err);
+        // // console.error(`❌ Errore durante il recupero dei file dal bucket ${bucketName}:`, err);
         reject(err);
       });
     });
@@ -159,9 +154,6 @@ const fileManager = async (fastify) => {
           const subjectName = filePath.length > 1 ? safeDecodeURIComponent(filePath[1]) : null;
           const detailName = filePath.length > 2 ? safeDecodeURIComponent(filePath[2]) : null;
           
-          console.log(`File trovato: ${file.name}, categoria: ${categoryName}, soggetto: ${subjectName}, dettaglio: ${detailName}, nome file: ${fileName}`);
-          console.log(`Percorso originale: ${file.name}, parti del percorso: ${filePath.join(', ')}`);
-          
           // Verifica se i nomi sono diversi da quelli nel DB a causa di spazi o caratteri speciali
           const originalCategoryName = filePath[0];
           const originalSubjectName = filePath.length > 1 ? filePath[1] : null;
@@ -173,7 +165,7 @@ const fileManager = async (fastify) => {
           );
           
           // Log per debug su tutte le categorie disponibili
-          console.log(`Categorie disponibili: ${folderStructure.map(f => f.name).join(', ')}`);
+          // // console.log(`Categorie disponibili: ${folderStructure.map(f => f.name).join(', ')}`);
           
           // Se non trova la categoria, prova con confronto case-insensitive o confrontando solo l'inizio del nome
           if (!categoryFolder) {
@@ -221,7 +213,7 @@ const fileManager = async (fastify) => {
             );
             
             // Log per debug su tutti i soggetti disponibili nella categoria
-            console.log(`Soggetti disponibili in ${categoryFolder.name}: ${categoryFolder.subfolder.map(s => s.name).join(', ')}`);
+            // // console.log(`Soggetti disponibili in ${categoryFolder.name}: ${categoryFolder.subfolder.map(s => s.name).join(', ')}`);
             
             // Se non trova il soggetto, prova con confronto case-insensitive
             if (!subjectFolder) {
@@ -270,7 +262,7 @@ const fileManager = async (fastify) => {
               
               // Log per debug su tutti i dettagli disponibili nel soggetto
               if (subjectFolder.subfolder && subjectFolder.subfolder.length > 0) {
-                console.log(`Dettagli disponibili in ${subjectFolder.name}: ${subjectFolder.subfolder.map(d => d.name).join(', ')}`);
+                // // console.log(`Dettagli disponibili in ${subjectFolder.name}: ${subjectFolder.subfolder.map(d => d.name).join(', ')}`);
               }
               
               // Se non trova il dettaglio, prova con confronto case-insensitive
@@ -309,42 +301,42 @@ const fileManager = async (fastify) => {
                 
                 detailFolder.fileCount++;
               } else {
-                console.log(`ATTENZIONE: Dettaglio non trovato per il file ${file.name}! Nome dettaglio: "${detailName}" in soggetto "${subjectFolder.name}"`);
+                // // console.log(`ATTENZIONE: Dettaglio non trovato per il file ${file.name}! Nome dettaglio: "${detailName}" in soggetto "${subjectFolder.name}"`);
                 // Confronto dettagliato
                 if (subjectFolder.subfolder && subjectFolder.subfolder.length > 0) {
-                  console.log('Confronto tra nomi dettaglio:');
+                  // // console.log('Confronto tra nomi dettaglio:');
                   subjectFolder.subfolder.forEach(detail => {
-                    console.log(`DB: "${detail.name}" vs File: "${detailName}" - Match: ${detail.name === detailName}`);
+                    // // console.log(`DB: "${detail.name}" vs File: "${detailName}" - Match: ${detail.name === detailName}`);
                   });
                 } else {
-                  console.log('Il soggetto non ha sottofolders definiti');
+                  // // console.log('Il soggetto non ha sottofolders definiti');
                 }
                 return; // Salta questo file
               }
             }
           } else {
-            console.log(`ATTENZIONE: Categoria non trovata per il file ${file.name}! Nome categoria: "${categoryName}"`);
+            // console.log(`ATTENZIONE: Categoria non trovata per il file ${file.name}! Nome categoria: "${categoryName}"`);
             // Poiché la categoria non è stata trovata, creiamo una struttura temporanea per debug
-            console.log('Confronto tra nomi categoria:');
+            // console.log('Confronto tra nomi categoria:');
             folderStructure.forEach(folder => {
-              console.log(`DB: "${folder.name}" vs File: "${categoryName}" - Match: ${folder.name === categoryName}`);
+              // console.log(`DB: "${folder.name}" vs File: "${categoryName}" - Match: ${folder.name === categoryName}`);
               // Confronto byte per byte per trovare differenze invisibili
               const dbBytes = [...folder.name].map(c => c.charCodeAt(0));
               const fileBytes = [...categoryName].map(c => c.charCodeAt(0));
-              console.log(`DB bytes: ${dbBytes.join(',')}`);
-              console.log(`File bytes: ${fileBytes.join(',')}`);
+              // console.log(`DB bytes: ${dbBytes.join(',')}`);
+              // console.log(`File bytes: ${fileBytes.join(',')}`);
             });
             return; // Salta questo file
           }
         });
       } catch (minioError) {
-        console.error('Errore durante il recupero dei file da MinIO:', minioError);
+        // console.error('Errore durante il recupero dei file da MinIO:', minioError);
         // Continua con la struttura delle cartelle anche se non ci sono file
       }
 
       reply.send(folderStructure).code(200);
     } catch (err) {
-      console.error('Errore durante il recupero dei dati:', err);
+      // console.error('Errore durante il recupero dei dati:', err);
       reply.status(500).send({ error: 'Failed to fetch data', details: err.message });
     }
   });
@@ -353,6 +345,13 @@ const fileManager = async (fastify) => {
   fastify.post('/upload/:db', async (request, reply) => {
     const { db } = request.params;
     const { categoryId, subjectId, detailId } = request.query;
+    
+    console.log('=== UPLOAD TO MINIO ===');
+    console.log('Parametri ricevuti dal frontend:');
+    console.log('  - Database:', db);
+    console.log('  - CategoryId:', categoryId);
+    console.log('  - SubjectId:', subjectId || '❌ NULL/UNDEFINED');
+    console.log('  - DetailId:', detailId || '❌ NULL/UNDEFINED');
     
     try {
       // Ottieni informazioni sulla categoria/soggetto/dettaglio
@@ -367,19 +366,30 @@ const fileManager = async (fastify) => {
         WHERE c.id = $1;
       `;
       
+      // console.log('📊 Eseguendo query gerarchia con parametri:', [categoryId, subjectId || null, detailId || null]);
+      console.log('📊 Query gerarchia con parametri:', [categoryId, subjectId || null, detailId || null]);
       const { rows } = await fastify.pg.query(hierarchyQuery, [categoryId, subjectId || null, detailId || null]);
       
+      console.log('📊 Risultati query gerarchia:', rows);
+      
       if (!rows.length || !rows[0].categoryname) {
+        console.log('❌ Categoria non trovata');
         return reply.code(404).send({ message: 'Categoria non trovata' });
       }
       
       const { categoryname, subjectname, detailname } = rows[0];
+      console.log('✅ Nomi risolti:');
+      console.log('   📁 Categoria:', categoryname);
+      console.log('   👤 Soggetto:', subjectname || 'null');
+      console.log('   📋 Dettaglio:', detailname || 'null');
       
       // Elabora il file caricato
       const data = await request.file();
       const { filename, mimetype, file } = data;
+      console.log('📎 File ricevuto:', filename, 'tipo:', mimetype);
       
       const sanitizedFilename = sanitizeFileName(filename);
+      console.log('📎 Filename sanitizzato:', sanitizedFilename);
       
       // Costruisci il path del file
       let objectPath = categoryname;
@@ -391,8 +401,11 @@ const fileManager = async (fastify) => {
       }
       objectPath += `/${sanitizedFilename}`;
       
+      console.log('🗂️  Percorso file costruito:', objectPath);
+      
       // Replace spaces with underscores in the path
       objectPath = objectPath.replace(/\s+/g, '_');
+      console.log('🗂️  Percorso file finale (sanitizzato):', objectPath);
       
       const minioClient = getMinioClient();
       
@@ -400,12 +413,21 @@ const fileManager = async (fastify) => {
       await ensureBucketExists(minioClient, db);
       
       // Carica il file su MinIO
+      console.log('⬆️  Caricando file su MinIO...');
+      console.log('📦 Parametri inviati a MinIO:');
+      console.log('   - Bucket:', db);
+      console.log('   - Object Path:', objectPath);
+      console.log('   - Filename originale:', filename);
+      console.log('   - Filename sanitizzato:', sanitizedFilename);
+      console.log('   - Content-Type:', mimetype);
+      
       await minioClient.putObject(db, objectPath, file, {
         'Content-Type': mimetype
       });
       
       // Costruisci l'URL del file
       const fileUrl = `https://minio.studiocantini.inowa.it/${db}/${objectPath}`;
+      console.log('✅ File caricato con successo! URL:', fileUrl);
       
       reply.send({ 
         message: 'File caricato con successo.',
@@ -419,7 +441,7 @@ const fileManager = async (fastify) => {
         }
       });
     } catch (err) {
-      console.error('Errore durante il caricamento del file:', err);
+      // console.error('Errore durante il caricamento del file:', err);
       reply.code(500).send({ message: 'Errore durante il caricamento del file', details: err.message });
     }
   });
@@ -451,7 +473,7 @@ const fileManager = async (fastify) => {
       
       reply.send({ message: 'File eliminato con successo' });
     } catch (err) {
-      console.error('Errore durante l\'eliminazione del file:', err);
+      // console.error('Errore durante l\'eliminazione del file:', err);
       reply.code(500).send({ message: 'Errore durante l\'eliminazione del file', details: err.message });
     }
   });
@@ -484,7 +506,7 @@ const fileManager = async (fastify) => {
         transactions: rows
       });
     } catch (err) {
-      console.error('Errore durante il recupero delle informazioni sul file:', err);
+      // console.error('Errore durante il recupero delle informazioni sul file:', err);
       reply.code(500).send({ message: 'Errore durante il recupero delle informazioni', details: err.message });
     }
   });
@@ -529,7 +551,7 @@ const fileManager = async (fastify) => {
       
       reply.send({ success: true, message: 'File associato alla transazione con successo' });
     } catch (err) {
-      console.error('Errore durante l\'associazione del file alla transazione:', err);
+      // console.error('Errore durante l\'associazione del file alla transazione:', err);
       reply.code(500).send({
         message: 'Errore durante l\'associazione del file alla transazione',
         details: err.message
