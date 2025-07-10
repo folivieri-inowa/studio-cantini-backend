@@ -804,7 +804,7 @@ const report = async (fastify) => {
   // Group Aggregation Endpoint - Consultative approach (in-memory aggregation)
   fastify.post('/group-aggregation', async (request, reply) => {
     try {
-      const { db, groupName, selectedCategories, selectedSubjects, selectedDetails } = request.body;
+      const { db, groupName, selectedCategories, selectedSubjects, selectedDetails, ownerId, year } = request.body;
 
       // Validate input
       if (!db) {
@@ -848,6 +848,20 @@ const report = async (fastify) => {
 
       if (conditions.length > 0) {
         whereClause = `AND (${conditions.join(' OR ')})`;
+      }
+
+      // Add owner filter if specified
+      if (ownerId && ownerId !== 'all-accounts') {
+        whereClause += ` AND t.ownerid = $${paramIndex}`;
+        queryParams.push(ownerId);
+        paramIndex++;
+      }
+
+      // Add year filter if specified
+      if (year) {
+        whereClause += ` AND EXTRACT(YEAR FROM t.date) = $${paramIndex}`;
+        queryParams.push(year);
+        paramIndex++;
       }
 
       // Query for aggregated data
