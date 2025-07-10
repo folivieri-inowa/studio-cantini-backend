@@ -800,6 +800,427 @@ const report = async (fastify) => {
       return reply.code(500).send({ error: 'Internal Server Error' });
     }
   });
+
+  // Group Aggregation Endpoint - Consultative approach (in-memory aggregation)
+  fastify.post('/group-aggregation', async (request, reply) => {
+    try {
+      const { db, groupName, selectedCategories, selectedSubjects, selectedDetails } = request.body;
+
+      // Validate input
+      if (!db) {
+        return reply.code(400).send({ error: 'Database name is required' });
+      }
+
+      if (!groupName) {
+        return reply.code(400).send({ error: 'Group name is required' });
+      }
+
+      if ((!selectedCategories || selectedCategories.length === 0) && 
+          (!selectedSubjects || selectedSubjects.length === 0) &&
+          (!selectedDetails || selectedDetails.length === 0)) {
+        return reply.code(400).send({ error: 'At least one category, subject, or detail must be selected' });
+      }
+
+      // Build dynamic WHERE clause for categories, subjects, and details
+      let whereClause = '';
+      let queryParams = [db];
+      let paramIndex = 2;
+
+      const conditions = [];
+
+      if (selectedCategories && selectedCategories.length > 0) {
+        const categoryPlaceholders = selectedCategories.map(() => `$${paramIndex++}`).join(', ');
+        conditions.push(`t.categoryid IN (${categoryPlaceholders})`);
+        queryParams.push(...selectedCategories);
+      }
+
+      if (selectedSubjects && selectedSubjects.length > 0) {
+        const subjectPlaceholders = selectedSubjects.map(() => `$${paramIndex++}`).join(', ');
+        conditions.push(`t.subjectid IN (${subjectPlaceholders})`);
+        queryParams.push(...selectedSubjects);
+      }
+
+      if (selectedDetails && selectedDetails.length > 0) {
+        const detailPlaceholders = selectedDetails.map(() => `$${paramIndex++}`).join(', ');
+        conditions.push(`t.detailid IN (${detailPlaceholders})`);
+        queryParams.push(...selectedDetails);
+      }
+
+      if (conditions.length > 0) {
+        whereClause = `AND (${conditions.join(' OR ')})`;
+      }
+
+      // Query for aggregated data
+      const aggregationQuery = `
+        SELECT 
+          t.id,
+          to_char(t.date, 'YYYY-MM-DD') AS date,
+          t.amount,
+          t.categoryid,
+          c.name AS categoryname,
+          t.subjectid,
+          s.name AS subjectname,
+          t.detailid,
+          d.name AS detailname,
+          t.ownerid,
+          o.name AS ownername,
+          o.cc,
+          o.iban,
+          t.description
+        FROM 
+          transactions t
+        JOIN
+          categories c ON t.categoryid = c.id
+        LEFT JOIN
+          subjects s ON t.subjectid = s.id
+        LEFT JOIN
+          details d ON t.detailid = d.id
+        JOIN
+          owners o ON t.ownerid = o.id
+        WHERE 
+          t.db = $1
+          ${whereClause}
+        ORDER BY 
+          t.date DESC, t.id DESC
+      `;
+
+      const { rows: transactions } = await fastify.pg.query(aggregationQuery, queryParams);
+
+      // Calculate aggregated statistics
+      const stats = {
+        totalTransactions: transactions.length,
+        totalAmount: 0,
+        totalIncome: 0,
+        totalExpenses: 0,
+        averageAmount: 0,
+        dateRange: {
+          from: null,
+          to: null
+        },
+        categoryBreakdown: {},
+        subjectBreakdown: {},
+        detailBreakdown: {},
+        ownerBreakdown: {}
+      };
+
+      // Process transactions for statistics
+      transactions.forEach(transaction => {
+        const amount = parseFloat(transaction.amount);
+        
+        // Total amounts
+        stats.totalAmount += amount;
+        if (amount > 0) {
+          stats.totalIncome += amount;
+        } else {
+          stats.totalExpenses += Math.abs(amount);
+        }
+
+        // Date range
+        if (!stats.dateRange.from || transaction.date < stats.dateRange.from) {
+          stats.dateRange.from = transaction.date;
+        }
+        if (!stats.dateRange.to || transaction.date > stats.dateRange.to) {
+          stats.dateRange.to = transaction.date;
+        }
+
+        // Category breakdown
+        const categoryKey = `${transaction.categoryid}_${transaction.categoryname}`;
+        if (!stats.categoryBreakdown[categoryKey]) {
+          stats.categoryBreakdown[categoryKey] = {
+            id: transaction.categoryid,
+            name: transaction.categoryname,
+            count: 0,
+            total: 0,
+            income: 0,
+            expenses: 0
+          };
+        }
+        stats.categoryBreakdown[categoryKey].count++;
+        stats.categoryBreakdown[categoryKey].total += amount;
+        if (amount > 0) {
+          stats.categoryBreakdown[categoryKey].income += amount;
+        } else {
+          stats.categoryBreakdown[categoryKey].expenses += Math.abs(amount);
+        }
+
+        // Subject breakdown
+        if (transaction.subjectid && transaction.subjectname) {
+          const subjectKey = `${transaction.subjectid}_${transaction.subjectname}`;
+          if (!stats.subjectBreakdown[subjectKey]) {
+            stats.subjectBreakdown[subjectKey] = {
+              id: transaction.subjectid,
+              name: transaction.subjectname,
+              count: 0,
+              total: 0,
+              income: 0,
+              expenses: 0
+            };
+          }
+          stats.subjectBreakdown[subjectKey].count++;
+          stats.subjectBreakdown[subjectKey].total += amount;
+          if (amount > 0) {
+            stats.subjectBreakdown[subjectKey].income += amount;
+          } else {
+            stats.subjectBreakdown[subjectKey].expenses += Math.abs(amount);
+          }
+        }
+
+        // Detail breakdown
+        if (transaction.detailid && transaction.detailname) {
+          const detailKey = `${transaction.detailid}_${transaction.detailname}`;
+          if (!stats.detailBreakdown[detailKey]) {
+            stats.detailBreakdown[detailKey] = {
+              id: transaction.detailid,
+              name: transaction.detailname,
+              count: 0,
+              total: 0,
+              income: 0,
+              expenses: 0
+            };
+          }
+          stats.detailBreakdown[detailKey].count++;
+          stats.detailBreakdown[detailKey].total += amount;
+          if (amount > 0) {
+            stats.detailBreakdown[detailKey].income += amount;
+          } else {
+            stats.detailBreakdown[detailKey].expenses += Math.abs(amount);
+          }
+        }
+
+        // Owner breakdown
+        const ownerKey = `${transaction.ownerid}_${transaction.ownername}`;
+        if (!stats.ownerBreakdown[ownerKey]) {
+          stats.ownerBreakdown[ownerKey] = {
+            id: transaction.ownerid,
+            name: transaction.ownername,
+            count: 0,
+            total: 0,
+            income: 0,
+            expenses: 0
+          };
+        }
+        stats.ownerBreakdown[ownerKey].count++;
+        stats.ownerBreakdown[ownerKey].total += amount;
+        if (amount > 0) {
+          stats.ownerBreakdown[ownerKey].income += amount;
+        } else {
+          stats.ownerBreakdown[ownerKey].expenses += Math.abs(amount);
+        }
+      });
+
+      // Calculate averages
+      if (stats.totalTransactions > 0) {
+        stats.averageAmount = stats.totalAmount / stats.totalTransactions;
+      }
+
+      // Convert breakdowns from objects to arrays
+      stats.categoryBreakdown = Object.values(stats.categoryBreakdown);
+      stats.subjectBreakdown = Object.values(stats.subjectBreakdown);
+      stats.detailBreakdown = Object.values(stats.detailBreakdown);
+      stats.ownerBreakdown = Object.values(stats.ownerBreakdown);
+
+      // Get names for selected categories, subjects, and details
+      const selectedCategoriesWithNames = [];
+      const selectedSubjectsWithNames = [];
+      const selectedDetailsWithNames = [];
+
+      // Query for selected category names
+      if (selectedCategories && selectedCategories.length > 0) {
+        const categoryNamesQuery = `
+          SELECT id, name FROM categories WHERE db = $1 AND id = ANY($2)
+        `;
+        const { rows: categoryNames } = await fastify.pg.query(categoryNamesQuery, [db, selectedCategories]);
+        selectedCategories.forEach(categoryId => {
+          const category = categoryNames.find(cat => cat.id === categoryId);
+          selectedCategoriesWithNames.push({
+            id: categoryId,
+            name: category ? category.name : `Categoria ${categoryId.substring(0, 8)}...`
+          });
+        });
+      }
+
+      // Query for selected subject names
+      if (selectedSubjects && selectedSubjects.length > 0) {
+        const subjectNamesQuery = `
+          SELECT id, name FROM subjects WHERE db = $1 AND id = ANY($2)
+        `;
+        const { rows: subjectNames } = await fastify.pg.query(subjectNamesQuery, [db, selectedSubjects]);
+        selectedSubjects.forEach(subjectId => {
+          const subject = subjectNames.find(subj => subj.id === subjectId);
+          selectedSubjectsWithNames.push({
+            id: subjectId,
+            name: subject ? subject.name : `Soggetto ${subjectId.substring(0, 8)}...`
+          });
+        });
+      }
+
+      // Query for selected detail names
+      if (selectedDetails && selectedDetails.length > 0) {
+        const detailNamesQuery = `
+          SELECT id, name FROM details WHERE db = $1 AND id = ANY($2)
+        `;
+        const { rows: detailNames } = await fastify.pg.query(detailNamesQuery, [db, selectedDetails]);
+        selectedDetails.forEach(detailId => {
+          const detail = detailNames.find(det => det.id === detailId);
+          selectedDetailsWithNames.push({
+            id: detailId,
+            name: detail ? detail.name : `Dettaglio ${detailId.substring(0, 8)}...`
+          });
+        });
+      }
+
+      // Round monetary values to 2 decimal places
+      stats.totalAmount = Math.round(stats.totalAmount * 100) / 100;
+      stats.totalIncome = Math.round(stats.totalIncome * 100) / 100;
+      stats.totalExpenses = Math.round(stats.totalExpenses * 100) / 100;
+      stats.averageAmount = Math.round(stats.averageAmount * 100) / 100;
+
+      stats.categoryBreakdown.forEach(cat => {
+        cat.total = Math.round(cat.total * 100) / 100;
+        cat.income = Math.round(cat.income * 100) / 100;
+        cat.expenses = Math.round(cat.expenses * 100) / 100;
+      });
+
+      stats.subjectBreakdown.forEach(subj => {
+        subj.total = Math.round(subj.total * 100) / 100;
+        subj.income = Math.round(subj.income * 100) / 100;
+        subj.expenses = Math.round(subj.expenses * 100) / 100;
+      });
+
+      stats.detailBreakdown.forEach(detail => {
+        detail.total = Math.round(detail.total * 100) / 100;
+        detail.income = Math.round(detail.income * 100) / 100;
+        detail.expenses = Math.round(detail.expenses * 100) / 100;
+      });
+
+      stats.ownerBreakdown.forEach(owner => {
+        owner.total = Math.round(owner.total * 100) / 100;
+        owner.income = Math.round(owner.income * 100) / 100;
+        owner.expenses = Math.round(owner.expenses * 100) / 100;
+      });
+
+      // Return aggregated results
+      return reply.send({
+        success: true,
+        groupName,
+        selectedCategories: selectedCategories || [],
+        selectedSubjects: selectedSubjects || [],
+        selectedDetails: selectedDetails || [],
+        selectedCategoriesWithNames,
+        selectedSubjectsWithNames,
+        selectedDetailsWithNames,
+        stats,
+        transactions: transactions.slice(0, 100) // Limit to first 100 for performance
+      });
+
+    } catch (error) {
+      fastify.log.error('Error in group aggregation:', error);
+      return reply.code(500).send({ 
+        error: 'Internal Server Error', 
+        message: error.message 
+      });
+    }
+  });
+
+  // Categories and Subjects for Group Aggregation
+  fastify.get('/categories-subjects/:db', async (request, reply) => {
+    try {
+      const { db } = request.params;
+
+      // Validate input
+      if (!db) {
+        return reply.code(400).send({ error: 'Database name is required' });
+      }
+
+      // Query for categories
+      const categoriesQuery = `
+        SELECT 
+          id,
+          name
+        FROM 
+          categories
+        WHERE 
+          db = $1
+        ORDER BY 
+          name ASC
+      `;
+
+      const { rows: categories } = await fastify.pg.query(categoriesQuery, [db]);
+
+      // Query for subjects
+      const subjectsQuery = `
+        SELECT 
+          id,
+          name,
+          category_id as categoryid
+        FROM 
+          subjects
+        WHERE 
+          db = $1
+        ORDER BY 
+          name ASC
+      `;
+
+      const { rows: subjects } = await fastify.pg.query(subjectsQuery, [db]);
+
+      // Query for details
+      const detailsQuery = `
+        SELECT 
+          id,
+          name,
+          subject_id as subjectid
+        FROM 
+          details
+        WHERE 
+          db = $1
+        ORDER BY 
+          name ASC
+      `;
+
+      const { rows: details } = await fastify.pg.query(detailsQuery, [db]);
+
+      // Organize subjects and details by category
+      const categoriesWithSubjects = categories.map(category => {
+        const categorySubjects = subjects.filter(subject => subject.categoryid === category.id);
+        
+        return {
+          id: category.id,
+          name: category.name,
+          subcategories: categorySubjects.reduce((acc, subject) => {
+            // Get details for this subject
+            const subjectDetails = details.filter(detail => detail.subjectid === subject.id);
+            
+            acc[subject.id] = {
+              id: subject.id,
+              name: subject.name,
+              details: subjectDetails.reduce((detailsAcc, detail) => {
+                detailsAcc[detail.id] = {
+                  id: detail.id,
+                  name: detail.name
+                };
+                return detailsAcc;
+              }, {})
+            };
+            return acc;
+          }, {})
+        };
+      });
+
+      return reply.send({
+        success: true,
+        data: categoriesWithSubjects
+      });
+
+    } catch (error) {
+      fastify.log.error('Error in categories-subjects endpoint:', error);
+      return reply.code(500).send({ 
+        error: 'Internal Server Error', 
+        message: error.message 
+      });
+    }
+  });
+
+  // ...existing endpoints...
 };
 
 export default report;
