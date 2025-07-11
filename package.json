@@ -8,7 +8,9 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "migrate": "node runMigrations.js"
+    "migrate": "node runMigrations.js",
+    "check-migrations": "node check-migrations.js",
+    "validate-migrations": "node validate-migrations.js"
   },
   "private": true,
   "dependencies": {

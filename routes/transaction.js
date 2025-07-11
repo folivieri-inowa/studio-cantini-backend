@@ -382,22 +382,16 @@ const transaction = async (fastify) => {
 
       const insertQuery = `
         INSERT INTO transactions (db, amount, categoryId, subjectId, detailId, ownerId, date, description,  note, paymenttype, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING *;
       `;
 
-      const insertValues = [db, amount, category, subject, details, owner, date, description, note, paymentType];
+      const insertValues = [db, amount, category, subject, details, owner, date, description, note, paymentType, status];
 
       await fastify.pg.query(insertQuery, insertValues);
       
-      // Aggiorna lo stato della transazione originale a pending
-      const updateStatusQuery = `
-        UPDATE transactions
-        SET status = 'pending'
-        WHERE id = $1 AND db = $2
-      `;
-      
-      await fastify.pg.query(updateStatusQuery, [id, db]);
+      // La transazione originale mantiene il suo status originale
+      // Se necessario, potrebbe essere aggiornato in futuro con logica specifica
 
       reply.send({ message: 'Record inserito correttamente' }).code(200);
     } catch (error) {
