@@ -368,7 +368,9 @@ const transaction = async (fastify) => {
 
       const originalTransaction = rows[0];
 
-      const updatedAmount = amount < 0 ? originalTransaction.amount - amount : originalTransaction.amount + amount;
+      // Fix: Calcolo corretto del rimanente dopo lo scorporo con arrotondamento a 2 cifre decimali
+      // Il rimanente è sempre: importo originale - importo scorporato
+      const updatedAmount = Math.round((originalTransaction.amount - amount) * 100) / 100;
 
       const updateQuery = `
           UPDATE transactions
@@ -386,7 +388,9 @@ const transaction = async (fastify) => {
         RETURNING *;
       `;
 
-      const insertValues = [db, amount, category, subject, details, owner, date, description, note, paymentType, status];
+      // Arrotonda anche l'amount da inserire a 2 cifre decimali
+      const roundedAmount = Math.round(amount * 100) / 100;
+      const insertValues = [db, roundedAmount, category, subject, details, owner, date, description, note, paymentType, status];
 
       await fastify.pg.query(insertQuery, insertValues);
       

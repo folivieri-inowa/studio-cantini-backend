@@ -815,6 +815,16 @@ const report = async (fastify) => {
     try {
       const { db, groupName, selectedCategories, selectedSubjects, selectedDetails, ownerId, year } = request.body;
 
+      console.log('Debug - Group aggregation ricevuto:', {
+        db,
+        groupName,
+        selectedCategories: selectedCategories?.length || 0,
+        selectedSubjects: selectedSubjects?.length || 0,
+        selectedDetails: selectedDetails?.length || 0,
+        ownerId,
+        year
+      });
+
       // Validate input
       if (!db) {
         return reply.code(400).send({ error: 'Database name is required' });
@@ -831,6 +841,8 @@ const report = async (fastify) => {
       }
 
       // Build dynamic WHERE clause for categories, subjects, and details
+      // LOGIC: When multiple types are selected, use AND logic (hierarchical filtering)
+      // When only one type is selected, use OR within that type
       let whereClause = '';
       let queryParams = [db];
       let paramIndex = 2;
@@ -855,8 +867,11 @@ const report = async (fastify) => {
         queryParams.push(...selectedDetails);
       }
 
+      // Use AND logic between different types of selections (hierarchical filtering)
+      // This ensures that when you select both category AND subject, 
+      // you get transactions that match BOTH criteria, not either one
       if (conditions.length > 0) {
-        whereClause = `AND (${conditions.join(' OR ')})`;
+        whereClause = `AND (${conditions.join(' AND ')})`;
       }
 
       // Add owner filter if specified
@@ -907,7 +922,19 @@ const report = async (fastify) => {
           t.date DESC, t.id DESC
       `;
 
+      console.log('Debug - Query generata:', aggregationQuery);
+      console.log('Debug - Parametri query:', queryParams);
+
       const { rows: transactions } = await fastify.pg.query(aggregationQuery, queryParams);
+
+      console.log(`Debug - Trovate ${transactions.length} transazioni`);
+      if (transactions.length > 0) {
+        console.log('Debug - Prima transazione:', {
+          amount: transactions[0].amount,
+          categoryname: transactions[0].categoryname,
+          date: transactions[0].date
+        });
+      }
 
       // Calculate aggregated statistics
       const stats = {
@@ -930,12 +957,21 @@ const report = async (fastify) => {
       transactions.forEach(transaction => {
         const amount = parseFloat(transaction.amount);
         
+        // Validate amount to prevent NaN corruption
+        if (amount == null || isNaN(amount)) {
+          console.warn(`Invalid amount detected in group aggregation: ${transaction.amount} for transaction ${transaction.id}`);
+          return; // Skip this transaction
+        }
+        
+        // Arrotondiamo a 2 decimali per maggiore precisione
+        const roundedAmount = Math.round(amount * 100) / 100;
+        
         // Total amounts
-        stats.totalAmount += amount;
-        if (amount > 0) {
-          stats.totalIncome += amount;
+        stats.totalAmount += roundedAmount;
+        if (roundedAmount > 0) {
+          stats.totalIncome += roundedAmount;
         } else {
-          stats.totalExpenses += Math.abs(amount);
+          stats.totalExpenses += Math.abs(roundedAmount);
         }
 
         // Date range
@@ -959,11 +995,11 @@ const report = async (fastify) => {
           };
         }
         stats.categoryBreakdown[categoryKey].count++;
-        stats.categoryBreakdown[categoryKey].total += amount;
-        if (amount > 0) {
-          stats.categoryBreakdown[categoryKey].income += amount;
+        stats.categoryBreakdown[categoryKey].total += roundedAmount;
+        if (roundedAmount > 0) {
+          stats.categoryBreakdown[categoryKey].income += roundedAmount;
         } else {
-          stats.categoryBreakdown[categoryKey].expenses += Math.abs(amount);
+          stats.categoryBreakdown[categoryKey].expenses += Math.abs(roundedAmount);
         }
 
         // Subject breakdown
@@ -980,11 +1016,11 @@ const report = async (fastify) => {
             };
           }
           stats.subjectBreakdown[subjectKey].count++;
-          stats.subjectBreakdown[subjectKey].total += amount;
-          if (amount > 0) {
-            stats.subjectBreakdown[subjectKey].income += amount;
+          stats.subjectBreakdown[subjectKey].total += roundedAmount;
+          if (roundedAmount > 0) {
+            stats.subjectBreakdown[subjectKey].income += roundedAmount;
           } else {
-            stats.subjectBreakdown[subjectKey].expenses += Math.abs(amount);
+            stats.subjectBreakdown[subjectKey].expenses += Math.abs(roundedAmount);
           }
         }
 
@@ -1002,11 +1038,11 @@ const report = async (fastify) => {
             };
           }
           stats.detailBreakdown[detailKey].count++;
-          stats.detailBreakdown[detailKey].total += amount;
-          if (amount > 0) {
-            stats.detailBreakdown[detailKey].income += amount;
+          stats.detailBreakdown[detailKey].total += roundedAmount;
+          if (roundedAmount > 0) {
+            stats.detailBreakdown[detailKey].income += roundedAmount;
           } else {
-            stats.detailBreakdown[detailKey].expenses += Math.abs(amount);
+            stats.detailBreakdown[detailKey].expenses += Math.abs(roundedAmount);
           }
         }
 
@@ -1023,17 +1059,17 @@ const report = async (fastify) => {
           };
         }
         stats.ownerBreakdown[ownerKey].count++;
-        stats.ownerBreakdown[ownerKey].total += amount;
-        if (amount > 0) {
-          stats.ownerBreakdown[ownerKey].income += amount;
+        stats.ownerBreakdown[ownerKey].total += roundedAmount;
+        if (roundedAmount > 0) {
+          stats.ownerBreakdown[ownerKey].income += roundedAmount;
         } else {
-          stats.ownerBreakdown[ownerKey].expenses += Math.abs(amount);
+          stats.ownerBreakdown[ownerKey].expenses += Math.abs(roundedAmount);
         }
       });
 
       // Calculate averages
       if (stats.totalTransactions > 0) {
-        stats.averageAmount = stats.totalAmount / stats.totalTransactions;
+        stats.averageAmount = Math.round((stats.totalAmount / stats.totalTransactions) * 100) / 100;
       }
 
       // Convert breakdowns from objects to arrays
