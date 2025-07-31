@@ -139,20 +139,10 @@ const report = async (fastify) => {
           // Arrotondiamo a 2 decimali per maggiore precisione
           const absAmount = parseFloat(Math.abs(amount).toFixed(2));
           
-          // Debug logging for 2023 expenses
-          if (year === '2023' && ownerId === 'b300a562-e1c7-48ae-821d-ea8ee6e937b7') {
-            console.log(`Processing 2023 expense: ${absAmount}, current expense: ${report.globalReport[year].expense}, month: ${month}`);
-          }
-          
           report.globalReport[year].expense += absAmount;
           report.globalReport[year].months[month].expense += absAmount;
           report.categoryReport[year][categoryId].totalExpense += absAmount;
           report.categoryReport[year][categoryId].months[month].expense += absAmount;
-          
-          // Debug logging after update
-          if (year === '2023' && ownerId === 'b300a562-e1c7-48ae-821d-ea8ee6e937b7') {
-            console.log(`After update - expense: ${report.globalReport[year].expense}, month expense: ${report.globalReport[year].months[month].expense}`);
-          }
         }
       });
 
@@ -477,11 +467,6 @@ const report = async (fastify) => {
           // Arrotondiamo per maggiore precisione
           const avgCost = monthsCount > 0 ? parseFloat((totalExpense / monthsCount).toFixed(2)) : 0;
 
-          // Per debugging, log dei valori calcolati
-          if (totalExpense > 0) {
-            console.log(`Dettaglio ${value.title}: Totale spese ${totalExpense.toFixed(2)}, Media ${avgCost.toFixed(2)} (su ${monthsCount} mesi)`);
-          }
-
           return {
             ...value,
             averageCost: avgCost.toFixed(2),
@@ -690,9 +675,6 @@ const report = async (fastify) => {
       // Update the details object with calculated values
       report.details.averageCost = avgMonthlyExpense.toFixed(2);
       report.details.totalExpense = currentYearExpensesRounded.toFixed(2);
-
-      // Log per debug
-      console.log(`Dettaglio '${detailInfo[0].name}': Totale spese ${currentYearExpensesRounded.toFixed(2)}, Media ${avgMonthlyExpense.toFixed(2)} (su ${lastMonthWithTransaction} mesi)`);
 
       reply.send(report);
     } catch (error) {
