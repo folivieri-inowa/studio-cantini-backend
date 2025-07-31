@@ -86,15 +86,22 @@ const report = async (fastify) => {
         const report = reportByOwner[ownerId].report;
         report.years.add(year);
 
-        // Initialize globalReport
+        // Initialize globalReport with explicit number conversion
         if (!report.globalReport[year]) {
-          report.globalReport[year] = { income: 0, expense: 0, months: {} };
+          report.globalReport[year] = { 
+            income: 0, 
+            expense: 0, 
+            months: {} 
+          };
         }
         if (!report.globalReport[year].months[month]) {
-          report.globalReport[year].months[month] = { income: 0, expense: 0 };
+          report.globalReport[year].months[month] = { 
+            income: 0, 
+            expense: 0 
+          };
         }
 
-        // Initialize categoryReport
+        // Initialize categoryReport 
         if (!report.categoryReport[year]) {
           report.categoryReport[year] = {};
         }
@@ -108,10 +115,19 @@ const report = async (fastify) => {
           };
         }
         if (!report.categoryReport[year][categoryId].months[month]) {
-          report.categoryReport[year][categoryId].months[month] = { income: 0, expense: 0 };
+          report.categoryReport[year][categoryId].months[month] = { 
+            income: 0, 
+            expense: 0 
+          };
         }
 
         // Update global and category totals
+        // Validate amount to prevent NaN corruption
+        if (amount == null || isNaN(amount)) {
+          console.warn(`Invalid amount detected: ${amount} for transaction with category ${categoryId}, year ${year}, month ${month}`);
+          return; // Skip this transaction
+        }
+        
         if (amount >= 0) {
           // Arrotondiamo a 2 decimali per maggiore precisione
           const amountRounded = parseFloat(amount.toFixed(2));
@@ -122,10 +138,21 @@ const report = async (fastify) => {
         } else {
           // Arrotondiamo a 2 decimali per maggiore precisione
           const absAmount = parseFloat(Math.abs(amount).toFixed(2));
+          
+          // Debug logging for 2023 expenses
+          if (year === '2023' && ownerId === 'b300a562-e1c7-48ae-821d-ea8ee6e937b7') {
+            console.log(`Processing 2023 expense: ${absAmount}, current expense: ${report.globalReport[year].expense}, month: ${month}`);
+          }
+          
           report.globalReport[year].expense += absAmount;
           report.globalReport[year].months[month].expense += absAmount;
           report.categoryReport[year][categoryId].totalExpense += absAmount;
           report.categoryReport[year][categoryId].months[month].expense += absAmount;
+          
+          // Debug logging after update
+          if (year === '2023' && ownerId === 'b300a562-e1c7-48ae-821d-ea8ee6e937b7') {
+            console.log(`After update - expense: ${report.globalReport[year].expense}, month expense: ${report.globalReport[year].months[month].expense}`);
+          }
         }
       });
 
