@@ -420,10 +420,10 @@ const report = async (fastify) => {
         // If no transactions found, average will be 0
         const monthCount = lastTransactionMonth > 0 ? lastTransactionMonth : 0;
 
-        // Calculate average based on all months from January to last month with activity
+        // Calculate average based on 12 months (simple yearly average)
         // Arrotondiamo per maggiore precisione
         const totalExpense = parseFloat(subject.totalExpense.toFixed(2));
-        const averageCost = monthCount > 0 ? parseFloat((totalExpense / monthCount).toFixed(2)) : 0;
+        const averageCost = totalExpense > 0 ? parseFloat((totalExpense / 12).toFixed(2)) : 0;
         const totalExpenseCost = totalExpense.toFixed(2);
 
         // Process details (values)
@@ -468,9 +468,9 @@ const report = async (fastify) => {
           // Calculate months from January to the last transaction month
           const monthsCount = lastMonth > 0 ? lastMonth : 0;
 
-          // Calculate average based on all months until the last transaction month
+          // Calculate average based on 12 months (simple yearly average)
           // Arrotondiamo per maggiore precisione
-          const avgCost = monthsCount > 0 ? parseFloat((totalExpense / monthsCount).toFixed(2)) : 0;
+          const avgCost = totalExpense > 0 ? parseFloat((totalExpense / 12).toFixed(2)) : 0;
 
           return {
             ...value,
@@ -676,8 +676,8 @@ const report = async (fastify) => {
 
       // Calcola la media mensile e il totale annuale delle spese
       const currentYearExpensesRounded = parseFloat(currentYearExpenses.toFixed(2));
-      const avgMonthlyExpense = lastMonthWithTransaction > 0 
-        ? parseFloat((currentYearExpensesRounded / lastMonthWithTransaction).toFixed(2)) 
+      const avgMonthlyExpense = currentYearExpensesRounded > 0 
+        ? parseFloat((currentYearExpensesRounded / 12).toFixed(2)) 
         : 0;
 
       // Update the details object with calculated values
