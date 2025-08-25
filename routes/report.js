@@ -195,6 +195,7 @@ const report = async (fastify) => {
         }];
 
         // Get all transactions for the specified category across all owners in this db
+        // Escludendo le carte di credito per "tutti i conti"
         const { rows: allTransactions } = await fastify.pg.query(`
         SELECT 
           t.id,
@@ -220,6 +221,7 @@ const report = async (fastify) => {
           AND t.categoryid = $2
           AND t.date >= $3
           AND t.date <= $4
+          AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
         `, [db, category, prevStartDate, endDate]);
 
         transactions = allTransactions;
@@ -524,7 +526,7 @@ const report = async (fastify) => {
 
       // Check if we're requesting all accounts
       if (owner === 'all-accounts') {
-        // Retrieve transactions for all owners
+        // Retrieve transactions for all owners, escludendo le carte di credito
         const { rows: allTransactions } = await fastify.pg.query(`
         SELECT
           t.id,
@@ -550,6 +552,7 @@ const report = async (fastify) => {
           AND t.detailid = $4
           AND t.date >= $5
           AND t.date <= $6
+          AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
         `, [db, category, subject, details, startDatePrevious, endDateCurrent]);
 
         transactions = allTransactions;
@@ -708,7 +711,7 @@ const report = async (fastify) => {
 
       // Check if we're requesting all accounts
       if (owner === 'all-accounts') {
-        // For all accounts, we need to get transactions for all owners
+        // For all accounts, we need to get transactions for all owners, escludendo le carte di credito
         const allAccountsQuery = `
         SELECT
           t.detailid as detail_id,
@@ -728,6 +731,7 @@ const report = async (fastify) => {
           EXTRACT(YEAR FROM t.date) IN ($3, $4) AND
           t.amount < 0 AND
           t.db = $5
+          AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
         GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date), t.ownerid, o.name, o.cc
         ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
         `;
@@ -888,6 +892,12 @@ const report = async (fastify) => {
         paramIndex++;
       }
 
+      // Se ownerId è null (tutti i conti), escludiamo le carte di credito
+      let creditCardFilter = '';
+      if (!ownerId || ownerId === 'all-accounts') {
+        creditCardFilter = ' AND (o.is_credit_card = false OR o.is_credit_card IS NULL)';
+      }
+
       // Query for aggregated data
       const aggregationQuery = `
         SELECT 
@@ -918,6 +928,7 @@ const report = async (fastify) => {
         WHERE 
           t.db = $1
           ${whereClause}
+          ${creditCardFilter}
         ORDER BY 
           t.date DESC, t.id DESC
       `;
