@@ -49,6 +49,7 @@ const report = async (fastify) => {
         owners o ON t.ownerid = o.id
       WHERE 
         t.db = $1
+        AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
     `, [db]);
 
       let reportByOwner = {};
@@ -222,6 +223,7 @@ const report = async (fastify) => {
           AND t.date >= $3
           AND t.date <= $4
           AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
         `, [db, category, prevStartDate, endDate]);
 
         transactions = allTransactions;
@@ -260,6 +262,7 @@ const report = async (fastify) => {
           AND t.categoryid = $3
           AND t.date >= $4
           AND t.date <= $5
+          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
         `, [db, owner, category, prevStartDate, endDate]);
 
         transactions = ownerTransactions;
@@ -553,6 +556,7 @@ const report = async (fastify) => {
           AND t.date >= $5
           AND t.date <= $6
           AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
         `, [db, category, subject, details, startDatePrevious, endDateCurrent]);
 
         transactions = allTransactions;
@@ -584,6 +588,7 @@ const report = async (fastify) => {
           AND t.detailid = $5
           AND t.date >= $6
           AND t.date <= $7
+          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
         ORDER BY t.date DESC
         `, [db, owner, category, subject, details, startDatePrevious, endDateCurrent]);
 
@@ -732,6 +737,7 @@ const report = async (fastify) => {
           t.amount < 0 AND
           t.db = $5
           AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
         GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date), t.ownerid, o.name, o.cc
         ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
         `;
@@ -756,6 +762,7 @@ const report = async (fastify) => {
           EXTRACT(YEAR FROM t.date) IN ($4, $5) AND
           t.amount < 0 AND
           t.db = $6
+          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
         GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date)
         ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
         `;
@@ -898,6 +905,9 @@ const report = async (fastify) => {
         creditCardFilter = ' AND (o.is_credit_card = false OR o.is_credit_card IS NULL)';
       }
 
+      // Aggiungiamo sempre il filtro per escludere i record dalle statistiche
+      const statsFilter = ' AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)';
+
       // Query for aggregated data
       const aggregationQuery = `
         SELECT 
@@ -929,6 +939,7 @@ const report = async (fastify) => {
           t.db = $1
           ${whereClause}
           ${creditCardFilter}
+          ${statsFilter}
         ORDER BY 
           t.date DESC, t.id DESC
       `;

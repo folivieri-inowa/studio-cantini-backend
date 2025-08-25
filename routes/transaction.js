@@ -26,6 +26,7 @@ const transaction = async (fastify) => {
         t.note,
         t.paymenttype,
         t.status,
+        t.excluded_from_stats,
         array_agg(doc.url) FILTER (WHERE doc.url IS NOT NULL) AS documents
       FROM transactions t
       JOIN categories c ON t.categoryId = c.id
@@ -49,7 +50,8 @@ const transaction = async (fastify) => {
         t.description,
         t.note,
         t.paymenttype,
-        t.status
+        t.status,
+        t.excluded_from_stats
       ORDER BY t.date DESC;
     `;
     const values = [db];
@@ -80,6 +82,7 @@ const transaction = async (fastify) => {
         status,
         db,
         documents,
+        excludedFromStats,
       } = request.body;
 
       const query = `
@@ -196,12 +199,12 @@ const transaction = async (fastify) => {
           UPDATE transactions
           SET ownerid = $1, date = $2, amount = $3, description = $4, 
               paymenttype = $5, note = $6, categoryid = $7, subjectid = $8, 
-              detailid = $9, status = $10
-          WHERE id = $11 AND db = $12
+              detailid = $9, status = $10, excluded_from_stats = $11
+          WHERE id = $12 AND db = $13
           RETURNING *;
         `;
 
-        const values = [owner, date, amount, description, paymentType, note, category, subject, details === '' ? null : details, status, id, db];
+        const values = [owner, date, amount, description, paymentType, note, category, subject, details === '' ? null : details, status, excludedFromStats || false, id, db];
         await fastify.pg.query(query, values);
 
         reply.send({ message: 'Record aggiornato con successo', status: 200 });
@@ -215,7 +218,7 @@ const transaction = async (fastify) => {
   });
 
   fastify.post('/edit/multi', { preHandler: fastify.authenticate }, async (request, reply) => {
-    const { db, category, subject, details, transactions, status, paymentType } = request.body;
+    const { db, category, subject, details, transactions, status, paymentType, excludedFromStats } = request.body;
 
     try {
       for (const t of transactions) {
@@ -223,47 +226,64 @@ const transaction = async (fastify) => {
         let values;
 
         const isPaymentTypeValid = paymentType !== null && paymentType !== '';
+        const hasExclusionFlag = excludedFromStats !== undefined && excludedFromStats !== null;
 
         if (!category) {
+          let updateFields = ['status = $1'];
+          let paramIndex = 2;
+          let queryValues = [status];
+
+          if (isPaymentTypeValid) {
+            updateFields.push(`paymenttype = $${paramIndex}`);
+            queryValues.push(paymentType);
+            paramIndex++;
+          }
+
+          if (hasExclusionFlag) {
+            updateFields.push(`excluded_from_stats = $${paramIndex}`);
+            queryValues.push(excludedFromStats);
+            paramIndex++;
+          }
+
           query = `
-          UPDATE transactions
-          SET status = $1
-          ${isPaymentTypeValid ? ', paymenttype = $2' : ''}
-          WHERE id = $${isPaymentTypeValid ? '3' : '2'} AND db = $${isPaymentTypeValid ? '4' : '3'}
-          RETURNING *;
-        `;
-          values = isPaymentTypeValid ? [status, paymentType, t, db] : [status, t, db];
+            UPDATE transactions
+            SET ${updateFields.join(', ')}
+            WHERE id = $${paramIndex} AND db = $${paramIndex + 1}
+            RETURNING *;
+          `;
+          values = [...queryValues, t, db];
         } else {
+          let updateFields = [
+            'categoryid = $1', 
+            'subjectid = $2', 
+            'detailid = $3', 
+            'status = $4'
+          ];
+          let paramIndex = 5;
+          let queryValues = [category, subject, details, status];
+
+          if (isPaymentTypeValid) {
+            updateFields.push(`paymenttype = $${paramIndex}`);
+            queryValues.push(paymentType);
+            paramIndex++;
+          }
+
+          if (hasExclusionFlag) {
+            updateFields.push(`excluded_from_stats = $${paramIndex}`);
+            queryValues.push(excludedFromStats);
+            paramIndex++;
+          }
+
           query = `
-          UPDATE transactions
-          SET categoryid = $1, 
-              subjectid = $2, 
-              detailid = $3, 
-              status = $4
-          ${isPaymentTypeValid ? ', paymenttype = $5' : ''}
-          WHERE id = $${isPaymentTypeValid ? '6' : '5'} AND db = $${isPaymentTypeValid ? '7' : '6'}
-          RETURNING *;
-        `;
-          values = isPaymentTypeValid ? [category, subject, details, status, paymentType, t, db] : [category, subject, details, status, t, db];
+            UPDATE transactions
+            SET ${updateFields.join(', ')}
+            WHERE id = $${paramIndex} AND db = $${paramIndex + 1}
+            RETURNING *;
+          `;
+          values = [...queryValues, t, db];
         }
 
-        // Esegui la query solo se paymentType è valido o non è incluso nella query
-        if (isPaymentTypeValid || !query.includes('paymenttype')) {
-          await fastify.pg.query(query, values);
-        } else {
-          // Se paymentType non è valido, aggiorna solo gli altri campi
-          query = `
-          UPDATE transactions
-          SET categoryid = $1, 
-              subjectid = $2, 
-              detailid = $3, 
-              status = $4
-          WHERE id = $5 AND db = $6
-          RETURNING *;
-        `;
-          values = [category, subject, details, status, t, db];
-          await fastify.pg.query(query, values);
-        }
+        await fastify.pg.query(query, values);
       }
 
       reply.send({ message: 'Record aggiornati con successo', status: 200 });
@@ -865,6 +885,36 @@ const transaction = async (fastify) => {
         error: 'Failed to undo import',
         message: error.message
       });
+    }
+  });
+
+  // Route per aggiornare solo il campo excluded_from_stats
+  fastify.post('/toggle-stats-exclusion', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { id, db, excludedFromStats } = request.body;
+
+      const query = `
+        UPDATE transactions
+        SET excluded_from_stats = $1
+        WHERE id = $2 AND db = $3
+        RETURNING id, excluded_from_stats;
+      `;
+
+      const values = [excludedFromStats, id, db];
+      const { rows } = await fastify.pg.query(query, values);
+
+      if (rows.length === 0) {
+        return reply.code(404).send({ message: 'Transaction not found', status: 404 });
+      }
+
+      reply.send({ 
+        message: 'Stato di esclusione aggiornato con successo', 
+        data: rows[0], 
+        status: 200 
+      });
+    } catch (error) {
+      console.error('Error updating stats exclusion', error);
+      return reply.code(400).send({ message: error.message, status: 400 });
     }
   });
 
