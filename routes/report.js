@@ -955,7 +955,7 @@ const report = async (fastify) => {
   // Group Aggregation Endpoint - Consultative approach (in-memory aggregation)
   fastify.post('/group-aggregation', async (request, reply) => {
     try {
-      const { db, groupName, selectedCategories, selectedSubjects, selectedDetails, ownerId, year } = request.body;
+      const { db, groupName, selectedCategories, selectedSubjects, selectedDetails, ownerId, year, startYear, startMonth, endYear, endMonth } = request.body;
 
       console.log('Debug - Group aggregation ricevuto:', {
         db,
@@ -967,7 +967,8 @@ const report = async (fastify) => {
         selectedDetails: selectedDetails?.length || 0,
         selectedDetailsIds: selectedDetails,
         ownerId,
-        year
+        year,
+        dateFilter: startYear && startMonth && endYear && endMonth ? { startYear, startMonth, endYear, endMonth } : null
       });
 
       // Validate input
@@ -1118,7 +1119,7 @@ const report = async (fastify) => {
         console.log(`  Category ${categoryId}: ${selection.subjects.size} subjects, ${selection.details.size} details, hasAll: ${hasAll}`);
       }
 
-      // Build WHERE conditions with intelligent hierarchy
+      // Build WHERE conditions based on explicit selection
       const categoryConditions = [];
       
       for (const [categoryId, selection] of selectionMap.entries()) {
@@ -1126,48 +1127,24 @@ const report = async (fastify) => {
         const hasDetails = selection.details.size > 0;
         const hasAllChildren = categoryHasAllChildren.get(categoryId);
 
-        // If category has ALL its children selected, treat it as "select entire category"
-        if (hasAllChildren) {
-          const placeholder = `$${paramIndex++}`;
-          categoryConditions.push(`t.categoryid = ${placeholder}`);
-          queryParams.push(categoryId);
-          console.log(`  → Category ${categoryId}: Using simple filter (has all children)`);
-        } else if (!hasSubjects && !hasDetails) {
+        if (!hasSubjects && !hasDetails) {
           // Category selected without children → include ALL from this category
           const placeholder = `$${paramIndex++}`;
           categoryConditions.push(`t.categoryid = ${placeholder}`);
           queryParams.push(categoryId);
           console.log(`  → Category ${categoryId}: Using simple filter (no children specified)`);
+        } else if (hasAllChildren) {
+          // All children selected → use simple category filter to include transactions with NULL detailid
+          const placeholder = `$${paramIndex++}`;
+          categoryConditions.push(`t.categoryid = ${placeholder}`);
+          queryParams.push(categoryId);
+          console.log(`  → Category ${categoryId}: Using simple filter (has all children, includes NULL details)`);
         } else if (hasDetails) {
-          // Details selected → filter by category + subject + detail
-          // Group by subject for cleaner query
-          const subjectDetailsMap = new Map(); // subjectId → [detailIds]
-          
-          for (const detailId of selection.details) {
-            const subjectId = detailToSubject.get(detailId);
-            if (subjectId) {
-              if (!subjectDetailsMap.has(subjectId)) {
-                subjectDetailsMap.set(subjectId, []);
-              }
-              subjectDetailsMap.get(subjectId).push(detailId);
-            }
-          }
-
-          const subjectConditions = [];
-          for (const [subjectId, detailIds] of subjectDetailsMap.entries()) {
-            const catPlaceholder = `$${paramIndex++}`;
-            const subjPlaceholder = `$${paramIndex++}`;
-            const detailPlaceholders = detailIds.map(() => `$${paramIndex++}`).join(', ');
-            
-            subjectConditions.push(
-              `(t.categoryid = ${catPlaceholder} AND t.subjectid = ${subjPlaceholder} AND t.detailid IN (${detailPlaceholders}))`
-            );
-            queryParams.push(categoryId, subjectId, ...detailIds);
-          }
-          
-          if (subjectConditions.length > 0) {
-            categoryConditions.push(`(${subjectConditions.join(' OR ')})`);
-          }
+          // Partial details selected → filter ONLY by detailid (excluding NULL)
+          const detailPlaceholders = Array.from(selection.details).map(() => `$${paramIndex++}`).join(', ');
+          categoryConditions.push(`t.detailid IN (${detailPlaceholders})`);
+          queryParams.push(...Array.from(selection.details));
+          console.log(`  → Category ${categoryId}: Using detail filter (${selection.details.size} details, excluding NULL)`);
         } else if (hasSubjects) {
           // Subjects selected without details → filter by category + subject
           const catPlaceholder = `$${paramIndex++}`;
@@ -1177,6 +1154,7 @@ const report = async (fastify) => {
             `(t.categoryid = ${catPlaceholder} AND t.subjectid IN (${subjPlaceholders}))`
           );
           queryParams.push(categoryId, ...Array.from(selection.subjects));
+          console.log(`  → Category ${categoryId}: Using subject filter (${selection.subjects.size} subjects)`);
         }
       }
 
@@ -1192,8 +1170,20 @@ const report = async (fastify) => {
         paramIndex++;
       }
 
-      // Add year filter if specified
-      if (year) {
+      // Add date range filter if specified (has priority over year filter)
+      if (startYear && startMonth && endYear && endMonth) {
+        // Converti anno-mese in formato comparabile (es. 2025-09 = 202509)
+        whereClause += ` AND (EXTRACT(YEAR FROM t.date) * 100 + EXTRACT(MONTH FROM t.date)) >= $${paramIndex}`;
+        queryParams.push(startYear * 100 + startMonth);
+        paramIndex++;
+        
+        whereClause += ` AND (EXTRACT(YEAR FROM t.date) * 100 + EXTRACT(MONTH FROM t.date)) <= $${paramIndex}`;
+        queryParams.push(endYear * 100 + endMonth);
+        paramIndex++;
+        
+        console.log(`Debug - Filtro date range applicato: ${startMonth}/${startYear} - ${endMonth}/${endYear}`);
+      } else if (year) {
+        // Fallback al filtro anno se non c'è filtro date range
         whereClause += ` AND EXTRACT(YEAR FROM t.date) = $${paramIndex}`;
         queryParams.push(year);
         paramIndex++;
