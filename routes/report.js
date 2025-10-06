@@ -961,8 +961,11 @@ const report = async (fastify) => {
         db,
         groupName,
         selectedCategories: selectedCategories?.length || 0,
+        selectedCategoriesIds: selectedCategories,
         selectedSubjects: selectedSubjects?.length || 0,
+        selectedSubjectsIds: selectedSubjects,
         selectedDetails: selectedDetails?.length || 0,
+        selectedDetailsIds: selectedDetails,
         ownerId,
         year
       });
@@ -982,38 +985,204 @@ const report = async (fastify) => {
         return reply.code(400).send({ error: 'At least one category, subject, or detail must be selected' });
       }
 
-      // Build dynamic WHERE clause for categories, subjects, and details
-      // LOGIC: When multiple types are selected, use AND logic (hierarchical filtering)
-      // When only one type is selected, use OR within that type
+      // Build dynamic WHERE clause with INTELLIGENT hierarchical logic
+      // FIXED LOGIC: Analyze the selection structure to build correct query
+      // - Categories without children selected → include ALL transactions from that category
+      // - Categories with subjects/details → filter hierarchically for those specific items
+      // - Use OR between independent groups, AND within hierarchical relationships
+      
       let whereClause = '';
       let queryParams = [db];
       let paramIndex = 2;
 
-      const conditions = [];
-
-      if (selectedCategories && selectedCategories.length > 0) {
-        const categoryPlaceholders = selectedCategories.map(() => `$${paramIndex++}`).join(', ');
-        conditions.push(`t.categoryid IN (${categoryPlaceholders})`);
-        queryParams.push(...selectedCategories);
-      }
-
+      // Rebuild selection structure from frontend data to understand hierarchy
+      const selectionMap = new Map(); // categoryId → { subjects: Set(subjectIds), details: Set(detailIds) }
+      
+      // Map subjects to their categories
+      const subjectToCategory = new Map();
       if (selectedSubjects && selectedSubjects.length > 0) {
-        const subjectPlaceholders = selectedSubjects.map(() => `$${paramIndex++}`).join(', ');
-        conditions.push(`t.subjectid IN (${subjectPlaceholders})`);
-        queryParams.push(...selectedSubjects);
+        for (const subjectId of selectedSubjects) {
+          // Query to find which category this subject belongs to
+          const { rows } = await fastify.pg.query(
+            'SELECT category_id FROM subjects WHERE id = $1 AND db = $2',
+            [subjectId, db]
+          );
+          if (rows.length > 0) {
+            subjectToCategory.set(subjectId, rows[0].category_id);
+          }
+        }
       }
 
+      // Map details to their subjects AND get the parent category for each subject
+      const detailToSubject = new Map();
       if (selectedDetails && selectedDetails.length > 0) {
-        const detailPlaceholders = selectedDetails.map(() => `$${paramIndex++}`).join(', ');
-        conditions.push(`t.detailid IN (${detailPlaceholders})`);
-        queryParams.push(...selectedDetails);
+        for (const detailId of selectedDetails) {
+          const { rows } = await fastify.pg.query(
+            'SELECT subject_id FROM details WHERE id = $1 AND db = $2',
+            [detailId, db]
+          );
+          if (rows.length > 0) {
+            const subjectId = rows[0].subject_id;
+            detailToSubject.set(detailId, subjectId);
+            
+            // Also map this subject to its category if not already done
+            if (!subjectToCategory.has(subjectId)) {
+              const { rows: catRows } = await fastify.pg.query(
+                'SELECT category_id FROM subjects WHERE id = $1 AND db = $2',
+                [subjectId, db]
+              );
+              if (catRows.length > 0) {
+                subjectToCategory.set(subjectId, catRows[0].category_id);
+              }
+            }
+          }
+        }
       }
 
-      // Use AND logic between different types of selections (hierarchical filtering)
-      // This ensures that when you select both category AND subject, 
-      // you get transactions that match BOTH criteria, not either one
-      if (conditions.length > 0) {
-        whereClause = `AND (${conditions.join(' AND ')})`;
+      // Build selection map by category
+      if (selectedCategories && selectedCategories.length > 0) {
+        for (const categoryId of selectedCategories) {
+          selectionMap.set(categoryId, { subjects: new Set(), details: new Set() });
+        }
+      }
+
+      // Add subjects to their categories
+      if (selectedSubjects && selectedSubjects.length > 0) {
+        for (const subjectId of selectedSubjects) {
+          const categoryId = subjectToCategory.get(subjectId);
+          if (categoryId) {
+            if (!selectionMap.has(categoryId)) {
+              selectionMap.set(categoryId, { subjects: new Set(), details: new Set() });
+            }
+            selectionMap.get(categoryId).subjects.add(subjectId);
+          }
+        }
+      }
+
+      // Add details to their subjects and categories
+      if (selectedDetails && selectedDetails.length > 0) {
+        for (const detailId of selectedDetails) {
+          const subjectId = detailToSubject.get(detailId);
+          if (subjectId) {
+            const categoryId = subjectToCategory.get(subjectId);
+            if (categoryId) {
+              if (!selectionMap.has(categoryId)) {
+                selectionMap.set(categoryId, { subjects: new Set(), details: new Set() });
+              }
+              selectionMap.get(categoryId).subjects.add(subjectId);
+              selectionMap.get(categoryId).details.add(detailId);
+            }
+          }
+        }
+      }
+
+      // Check if each category has ALL its subjects/details selected (meaning user wants entire category)
+      // If so, we should not filter by subjects/details for better performance
+      const categoryHasAllChildren = new Map();
+      
+      for (const [categoryId, selection] of selectionMap.entries()) {
+        if (selection.subjects.size > 0) {
+          // Query to count total subjects in this category
+          const { rows: subjectCount } = await fastify.pg.query(
+            'SELECT COUNT(*) as count FROM subjects WHERE category_id = $1 AND db = $2',
+            [categoryId, db]
+          );
+          
+          const totalSubjects = parseInt(subjectCount[0].count);
+          const hasAllSubjects = totalSubjects > 0 && selection.subjects.size === totalSubjects;
+          
+          // If has all subjects, check if has all details for each subject
+          if (hasAllSubjects && selection.details.size > 0) {
+            // Query to count total details for all subjects in this category
+            const { rows: detailCount } = await fastify.pg.query(
+              'SELECT COUNT(*) as count FROM details WHERE subject_id = ANY(SELECT id FROM subjects WHERE category_id = $1 AND db = $2) AND db = $2',
+              [categoryId, db]
+            );
+            
+            const totalDetails = parseInt(detailCount[0].count);
+            const hasAllDetails = totalDetails > 0 && selection.details.size >= totalDetails;
+            
+            categoryHasAllChildren.set(categoryId, hasAllSubjects && hasAllDetails);
+          } else {
+            categoryHasAllChildren.set(categoryId, hasAllSubjects && selection.details.size === 0);
+          }
+        } else {
+          categoryHasAllChildren.set(categoryId, false);
+        }
+      }
+
+      // Debug: log the selection map structure
+      console.log('Debug - Selection Map costruita:');
+      for (const [categoryId, selection] of selectionMap.entries()) {
+        const hasAll = categoryHasAllChildren.get(categoryId) || false;
+        console.log(`  Category ${categoryId}: ${selection.subjects.size} subjects, ${selection.details.size} details, hasAll: ${hasAll}`);
+      }
+
+      // Build WHERE conditions with intelligent hierarchy
+      const categoryConditions = [];
+      
+      for (const [categoryId, selection] of selectionMap.entries()) {
+        const hasSubjects = selection.subjects.size > 0;
+        const hasDetails = selection.details.size > 0;
+        const hasAllChildren = categoryHasAllChildren.get(categoryId);
+
+        // If category has ALL its children selected, treat it as "select entire category"
+        if (hasAllChildren) {
+          const placeholder = `$${paramIndex++}`;
+          categoryConditions.push(`t.categoryid = ${placeholder}`);
+          queryParams.push(categoryId);
+          console.log(`  → Category ${categoryId}: Using simple filter (has all children)`);
+        } else if (!hasSubjects && !hasDetails) {
+          // Category selected without children → include ALL from this category
+          const placeholder = `$${paramIndex++}`;
+          categoryConditions.push(`t.categoryid = ${placeholder}`);
+          queryParams.push(categoryId);
+          console.log(`  → Category ${categoryId}: Using simple filter (no children specified)`);
+        } else if (hasDetails) {
+          // Details selected → filter by category + subject + detail
+          // Group by subject for cleaner query
+          const subjectDetailsMap = new Map(); // subjectId → [detailIds]
+          
+          for (const detailId of selection.details) {
+            const subjectId = detailToSubject.get(detailId);
+            if (subjectId) {
+              if (!subjectDetailsMap.has(subjectId)) {
+                subjectDetailsMap.set(subjectId, []);
+              }
+              subjectDetailsMap.get(subjectId).push(detailId);
+            }
+          }
+
+          const subjectConditions = [];
+          for (const [subjectId, detailIds] of subjectDetailsMap.entries()) {
+            const catPlaceholder = `$${paramIndex++}`;
+            const subjPlaceholder = `$${paramIndex++}`;
+            const detailPlaceholders = detailIds.map(() => `$${paramIndex++}`).join(', ');
+            
+            subjectConditions.push(
+              `(t.categoryid = ${catPlaceholder} AND t.subjectid = ${subjPlaceholder} AND t.detailid IN (${detailPlaceholders}))`
+            );
+            queryParams.push(categoryId, subjectId, ...detailIds);
+          }
+          
+          if (subjectConditions.length > 0) {
+            categoryConditions.push(`(${subjectConditions.join(' OR ')})`);
+          }
+        } else if (hasSubjects) {
+          // Subjects selected without details → filter by category + subject
+          const catPlaceholder = `$${paramIndex++}`;
+          const subjPlaceholders = Array.from(selection.subjects).map(() => `$${paramIndex++}`).join(', ');
+          
+          categoryConditions.push(
+            `(t.categoryid = ${catPlaceholder} AND t.subjectid IN (${subjPlaceholders}))`
+          );
+          queryParams.push(categoryId, ...Array.from(selection.subjects));
+        }
+      }
+
+      // Combine all category conditions with OR (independent groups)
+      if (categoryConditions.length > 0) {
+        whereClause = `AND (${categoryConditions.join(' OR ')})`;
       }
 
       // Add owner filter if specified
