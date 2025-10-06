@@ -5,8 +5,8 @@ import bcrypt from 'bcrypt';
 
 // Configurazione
 const SALT_ROUNDS = 12; // Stesso valore usato nel backend per sicurezza
-const email = 'm.depietri@inowa.it';
-const password = 'ACMilan86!';
+const email = process.argv[2] || 'm.depietri@inowa.it';
+const password = process.argv[3] || 'ACMilan86!';
 
 async function generatePasswordHash() {
   try {
