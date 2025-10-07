@@ -310,8 +310,21 @@ const report = async (fastify) => {
         return reply.status(404).send({ error: 'Category not found' });
       }
 
-      const prevStartDate = `${parseInt(year) - 1}-01-01`;
-      const endDate = `${year}-12-31`;
+      // Gestione del caso 'all-years'
+      let prevStartDate;
+      let endDate;
+      let currentYear;
+      
+      if (year === 'all-years') {
+        // Per all-years, prendiamo tutte le transazioni disponibili
+        prevStartDate = '1970-01-01'; // Data molto indietro nel tempo
+        endDate = '2099-12-31'; // Data molto avanti nel tempo
+        currentYear = new Date().getFullYear(); // Anno corrente per i calcoli
+      } else {
+        prevStartDate = `${parseInt(year) - 1}-01-01`;
+        endDate = `${year}-12-31`;
+        currentYear = parseInt(year);
+      }
 
       let ownerData;
       let transactions;
@@ -404,7 +417,7 @@ const report = async (fastify) => {
         categoryId: category,
         categoryName: categoryData[0].name,
         year: year,
-        prevYear: parseInt(year) - 1,
+        prevYear: year === 'all-years' ? 'N/A' : (currentYear - 1),
         owner: ownerData[0],
         totalIncome: 0,
         totalExpense: 0,
@@ -425,7 +438,8 @@ const report = async (fastify) => {
         const txDate = new Date(tx.date);
         const month = txDate.getMonth() + 1;
         const amount = parseFloat(tx.amount) || 0;
-        const isPrevYear = txDate.getFullYear() < parseInt(year);
+        const txYear = txDate.getFullYear();
+        const isPrevYear = year === 'all-years' ? false : (txYear < currentYear);
 
         // Update monthly totals
         if (amount > 0) {
@@ -499,8 +513,6 @@ const report = async (fastify) => {
           // Add detail to values if not already present
           if (tx.detailid) {
             const detailId = tx.detailid;
-            const txYear = txDate.getFullYear();
-            const currentYearValue = parseInt(year);
             
             // Aggiungiamo il dettaglio solo se:
             // 1. Non è già presente nella lista
@@ -512,9 +524,9 @@ const report = async (fastify) => {
                 id: detailId,
                 title: tx.detail_name,
                 detailsId: detailId,
-                hasCurrentYearTransactions: txYear === currentYearValue // Indica se il dettaglio ha transazioni nell'anno corrente
+                hasCurrentYearTransactions: year === 'all-years' ? true : (txYear === currentYear) // Indica se il dettaglio ha transazioni nell'anno corrente
               });
-            } else if (txYear === currentYearValue) {
+            } else if (year === 'all-years' || txYear === currentYear) {
               // Se il dettaglio esiste già ma questa transazione è dell'anno corrente,
               // aggiorniamo la flag per indicare che ha transazioni nell'anno corrente
               const existingDetail = report.subcategories[subjectId].values.find(v => v.id === detailId);
@@ -536,11 +548,13 @@ const report = async (fastify) => {
         });
 
         // Find current year transactions for this subject
-        const subjectTransactions = transactions.filter(tx =>
-          tx.subjectid === subject.id &&
-          parseFloat(tx.amount) < 0 &&
-          new Date(tx.date).getFullYear() === parseInt(year),
-        );
+        const subjectTransactions = year === 'all-years' 
+          ? transactions.filter(tx => tx.subjectid === subject.id && parseFloat(tx.amount) < 0)
+          : transactions.filter(tx =>
+              tx.subjectid === subject.id &&
+              parseFloat(tx.amount) < 0 &&
+              new Date(tx.date).getFullYear() === currentYear,
+            );
 
         // Get the last month with a transaction in the current year
         const lastTransactionMonth = subjectTransactions.length > 0
@@ -564,18 +578,22 @@ const report = async (fastify) => {
         // Aggiorniamo i values con i dettagli filtrati e calcolati
         subject.values = filteredValues.map(value => {
           // Filtra le transazioni relative a questo dettaglio specifico
-          const relatedTransactions = transactions.filter(tx =>
-            tx.detailid === value.id &&
-            parseFloat(tx.amount) < 0 &&
-            new Date(tx.date).getFullYear() === parseInt(year),
-          );
+          const relatedTransactions = year === 'all-years'
+            ? transactions.filter(tx => tx.detailid === value.id && parseFloat(tx.amount) < 0)
+            : transactions.filter(tx =>
+                tx.detailid === value.id &&
+                parseFloat(tx.amount) < 0 &&
+                new Date(tx.date).getFullYear() === currentYear,
+              );
 
           // Filtra le transazioni di entrata relative a questo dettaglio specifico
-          const relatedIncomeTransactions = transactions.filter(tx =>
-            tx.detailid === value.id &&
-            parseFloat(tx.amount) > 0 &&
-            new Date(tx.date).getFullYear() === parseInt(year),
-          );
+          const relatedIncomeTransactions = year === 'all-years'
+            ? transactions.filter(tx => tx.detailid === value.id && parseFloat(tx.amount) > 0)
+            : transactions.filter(tx =>
+                tx.detailid === value.id &&
+                parseFloat(tx.amount) > 0 &&
+                new Date(tx.date).getFullYear() === currentYear,
+              );
 
           // Log per debug se non ci sono transazioni per questo dettaglio
           if (relatedTransactions.length === 0) {
@@ -640,11 +658,24 @@ const report = async (fastify) => {
         return reply.status(400).send({ error: "Missing required parameters" });
       }
 
-      const currentYear = parseInt(year);
-      const previousYear = currentYear - 1;
+      // Gestione del caso 'all-years'
+      let currentYear;
+      let previousYear;
+      let startDatePrevious;
+      let endDateCurrent;
 
-      const startDatePrevious = `${previousYear}-01-01`;
-      const endDateCurrent = `${currentYear}-12-31`;
+      if (year === 'all-years') {
+        // Per all-years, prendiamo tutte le transazioni disponibili
+        currentYear = new Date().getFullYear();
+        previousYear = currentYear - 1;
+        startDatePrevious = '1970-01-01';
+        endDateCurrent = '2099-12-31';
+      } else {
+        currentYear = parseInt(year);
+        previousYear = currentYear - 1;
+        startDatePrevious = `${previousYear}-01-01`;
+        endDateCurrent = `${currentYear}-12-31`;
+      }
 
       // Get detail info
       const { rows: detailInfo } = await fastify.pg.query(
@@ -761,7 +792,8 @@ const report = async (fastify) => {
         const month = parseInt(tx.month);
         const txYear = parseInt(tx.year);
         const amount = parseFloat(tx.amount) || 0;
-        const isPrevYear = txYear === previousYear;
+        // Per all-years, consideriamo tutto come anno corrente
+        const isPrevYear = year === 'all-years' ? false : (txYear === previousYear);
         
         // Registra la data della transazione per l'anno corrente (serve per calcoli statistici)
         if (!isPrevYear && amount < 0) {
@@ -831,9 +863,22 @@ const report = async (fastify) => {
         return reply.code(400).send({ error: 'Missing required parameters' });
       }
 
-      // Get current year and previous year transactions for this subject and category
-      const currentYear = parseInt(year);
-      const prevYear = currentYear - 1;
+      // Gestione del caso 'all-years'
+      let currentYear;
+      let prevYear;
+      let yearFilter;
+
+      if (year === 'all-years') {
+        // Per all-years, prendiamo tutte le transazioni disponibili
+        currentYear = new Date().getFullYear();
+        prevYear = currentYear - 1;
+        // Per il filtro SQL, usiamo un range molto ampio
+        yearFilter = null; // Indica che non usiamo il filtro IN
+      } else {
+        currentYear = parseInt(year);
+        prevYear = currentYear - 1;
+        yearFilter = [prevYear, currentYear];
+      }
 
       // First, get the subject name
       const { rows: subjectData } = await fastify.pg.query(
@@ -848,57 +893,119 @@ const report = async (fastify) => {
       // Check if we're requesting all accounts
       if (owner === 'all-accounts') {
         // For all accounts, we need to get transactions for all owners, escludendo le carte di credito
-        const allAccountsQuery = `
-        SELECT
-          t.detailid as detail_id,
-          d.name as detail_name,
-          EXTRACT(MONTH FROM t.date) as month,
-          EXTRACT(YEAR FROM t.date) as year,
-          SUM(t.amount) as amount,
-          t.ownerid,
-          o.name as owner_name,
-          o.cc as owner_cc
-        FROM transactions t
-        JOIN details d ON t.detailid = d.id
-        JOIN owners o ON t.ownerid = o.id
-        WHERE
-          t.subjectid = $1 AND
-          t.categoryid = $2 AND
-          EXTRACT(YEAR FROM t.date) IN ($3, $4) AND
-          t.amount < 0 AND
-          t.db = $5
-          AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
-          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
-        GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date), t.ownerid, o.name, o.cc
-        ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
-        `;
+        let allAccountsQuery;
+        let queryParams;
 
-        const { rows: allAccountsRows } = await fastify.pg.query(allAccountsQuery, [subject, category, prevYear, currentYear, db]);
+        if (yearFilter) {
+          // Query con filtro anni specifici
+          allAccountsQuery = `
+          SELECT
+            t.detailid as detail_id,
+            d.name as detail_name,
+            EXTRACT(MONTH FROM t.date) as month,
+            EXTRACT(YEAR FROM t.date) as year,
+            SUM(t.amount) as amount,
+            t.ownerid,
+            o.name as owner_name,
+            o.cc as owner_cc
+          FROM transactions t
+          JOIN details d ON t.detailid = d.id
+          JOIN owners o ON t.ownerid = o.id
+          WHERE
+            t.subjectid = $1 AND
+            t.categoryid = $2 AND
+            EXTRACT(YEAR FROM t.date) IN ($3, $4) AND
+            t.amount < 0 AND
+            t.db = $5
+            AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date), t.ownerid, o.name, o.cc
+          ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
+          `;
+          queryParams = [subject, category, prevYear, currentYear, db];
+        } else {
+          // Query senza filtro anni (all-years)
+          allAccountsQuery = `
+          SELECT
+            t.detailid as detail_id,
+            d.name as detail_name,
+            EXTRACT(MONTH FROM t.date) as month,
+            EXTRACT(YEAR FROM t.date) as year,
+            SUM(t.amount) as amount,
+            t.ownerid,
+            o.name as owner_name,
+            o.cc as owner_cc
+          FROM transactions t
+          JOIN details d ON t.detailid = d.id
+          JOIN owners o ON t.ownerid = o.id
+          WHERE
+            t.subjectid = $1 AND
+            t.categoryid = $2 AND
+            t.amount < 0 AND
+            t.db = $3
+            AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date), t.ownerid, o.name, o.cc
+          ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
+          `;
+          queryParams = [subject, category, db];
+        }
+
+        const { rows: allAccountsRows } = await fastify.pg.query(allAccountsQuery, queryParams);
         rows = allAccountsRows;
       } else {
-        // For a specific owner, use the original query
-        const specificOwnerQuery = `
-        SELECT
-          t.detailid as detail_id,
-          d.name as detail_name,
-          EXTRACT(MONTH FROM t.date) as month,
-          EXTRACT(YEAR FROM t.date) as year,
-          SUM(t.amount) as amount
-        FROM transactions t
-        JOIN details d ON t.detailid = d.id
-        WHERE
-          t.subjectid = $1 AND
-          t.categoryid = $2 AND
-          t.ownerid = $3 AND
-          EXTRACT(YEAR FROM t.date) IN ($4, $5) AND
-          t.amount < 0 AND
-          t.db = $6
-          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
-        GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date)
-        ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
-        `;
+        // For a specific owner
+        let specificOwnerQuery;
+        let queryParams;
 
-        const { rows: specificOwnerRows } = await fastify.pg.query(specificOwnerQuery, [subject, category, owner, prevYear, currentYear, db]);
+        if (yearFilter) {
+          // Query con filtro anni specifici
+          specificOwnerQuery = `
+          SELECT
+            t.detailid as detail_id,
+            d.name as detail_name,
+            EXTRACT(MONTH FROM t.date) as month,
+            EXTRACT(YEAR FROM t.date) as year,
+            SUM(t.amount) as amount
+          FROM transactions t
+          JOIN details d ON t.detailid = d.id
+          WHERE
+            t.subjectid = $1 AND
+            t.categoryid = $2 AND
+            t.ownerid = $3 AND
+            EXTRACT(YEAR FROM t.date) IN ($4, $5) AND
+            t.amount < 0 AND
+            t.db = $6
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date)
+          ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
+          `;
+          queryParams = [subject, category, owner, prevYear, currentYear, db];
+        } else {
+          // Query senza filtro anni (all-years)
+          specificOwnerQuery = `
+          SELECT
+            t.detailid as detail_id,
+            d.name as detail_name,
+            EXTRACT(MONTH FROM t.date) as month,
+            EXTRACT(YEAR FROM t.date) as year,
+            SUM(t.amount) as amount
+          FROM transactions t
+          JOIN details d ON t.detailid = d.id
+          WHERE
+            t.subjectid = $1 AND
+            t.categoryid = $2 AND
+            t.ownerid = $3 AND
+            t.amount < 0 AND
+            t.db = $4
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          GROUP BY t.detailid, d.name, EXTRACT(MONTH FROM t.date), EXTRACT(YEAR FROM t.date)
+          ORDER BY t.detailid, EXTRACT(YEAR FROM t.date), EXTRACT(MONTH FROM t.date)
+          `;
+          queryParams = [subject, category, owner, db];
+        }
+
+        const { rows: specificOwnerRows } = await fastify.pg.query(specificOwnerQuery, queryParams);
         rows = specificOwnerRows;
       }
 

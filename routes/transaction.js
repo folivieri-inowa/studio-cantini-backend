@@ -321,6 +321,10 @@ const transaction = async (fastify) => {
       // Handle the special case for "all-accounts"
       const isAllAccounts = owner === 'all-accounts';
 
+      // Gestione del caso 'all-years'
+      const hasYearFilter = year && year !== 'all-years';
+      const yearValue = hasYearFilter ? parseInt(year) : null;
+
       const query = `
         SELECT
           to_char(t.date, 'YYYY-MM-DD') AS date,
@@ -343,16 +347,16 @@ const transaction = async (fastify) => {
           AND t.categoryId = ${isAllAccounts ? '$2' : '$3'}
           AND t.subjectId = ${isAllAccounts ? '$3' : '$4'}
           ${details ? `AND t.detailId = $${isAllAccounts ? '4' : '5'}` : ''}
-          AND EXTRACT(YEAR FROM t.date) = $${isAllAccounts ? (details ? '5' : '4') : (details ? '6' : '5')}
+          ${hasYearFilter ? `AND EXTRACT(YEAR FROM t.date) = $${isAllAccounts ? (details ? '5' : '4') : (details ? '6' : '5')}` : ''}
       `;
 
       const values = isAllAccounts
         ? (details
-            ? [db, category, subject, details, parseInt(year)]
-            : [db, category, subject, parseInt(year)])
+            ? (hasYearFilter ? [db, category, subject, details, yearValue] : [db, category, subject, details])
+            : (hasYearFilter ? [db, category, subject, yearValue] : [db, category, subject]))
         : (details
-            ? [db, owner, category, subject, details, parseInt(year)]
-            : [db, owner, category, subject, parseInt(year)]);
+            ? (hasYearFilter ? [db, owner, category, subject, details, yearValue] : [db, owner, category, subject, details])
+            : (hasYearFilter ? [db, owner, category, subject, yearValue] : [db, owner, category, subject]));
 
       const { rows } = await fastify.pg.query(query, values);
 
