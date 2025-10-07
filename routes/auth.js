@@ -15,7 +15,18 @@ const auth = async (fastify) => {
     try {
       const user = await checkUserLogin(fastify, request.headers.authorization);
 
-      reply.send({ user });
+      // Se l'utente ha ruoli database, estrai il primo ruolo disponibile
+      let responseUser = { ...user };
+      if (user.dbrole && Array.isArray(user.dbrole) && user.dbrole.length > 0) {
+        const firstRole = user.dbrole[0];
+        responseUser.role = firstRole.role;
+        responseUser.db = firstRole.db;
+      }
+      
+      // Rimuovi dbrole dalla risposta per sicurezza
+      delete responseUser.dbrole;
+
+      reply.send({ data: { user: responseUser } });
     } catch (error) {
       console.error(error);
       reply.send({ message: 'Invalid token' });
@@ -41,11 +52,13 @@ const auth = async (fastify) => {
         return reply.code(400).send({ message: 'Credenziali non valide', status: 400 });
       }
 
-      const dbRoles = user.dbrole
-      const userRole = dbRoles.find(role => role.db === db);
-
-      if (!userRole) {
-        return reply.code(400).send({ message: 'Database non trovato', status: 400 });
+      // Gestione ruoli database (opzionale)
+      let userRole = null;
+      if (db && user.dbrole && Array.isArray(user.dbrole)) {
+        userRole = user.dbrole.find(role => role.db === db);
+        if (!userRole) {
+          return reply.code(400).send({ message: 'Database non trovato o accesso negato', status: 400 });
+        }
       }
 
       delete user.password;
@@ -55,7 +68,12 @@ const auth = async (fastify) => {
         expiresIn: 14400 // 4 ore in secondi
       });
 
-      reply.send({ accessToken: token, user: {...user, role: userRole.role, db:db} });
+      // Se c'è un ruolo per il db, lo includiamo nella risposta
+      const responseUser = userRole 
+        ? { ...user, role: userRole.role, db: db }
+        : user;
+
+      reply.send({ accessToken: token, user: responseUser });
     } catch (error) {
       console.error(error);
       reply.code(500).send({ message: 'Errore durante il login', status: 500 });
