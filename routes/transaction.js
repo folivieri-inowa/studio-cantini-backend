@@ -116,7 +116,10 @@ const transaction = async (fastify) => {
       const bucketName = db;
       const bucketTemp = 'file-manager';
 
-      if (documents.length === 0) {
+      // Verifica che documents sia un array, altrimenti usa array vuoto
+      const documentsArray = Array.isArray(documents) ? documents : [];
+
+      if (documentsArray.length === 0) {
         const deleteQuery = `
           DELETE FROM documents
           WHERE transaction_id = $1 AND db = $2;
@@ -136,8 +139,8 @@ const transaction = async (fastify) => {
       // Verifica se il bucket esiste, altrimenti lo crea
       await ensureBucketExists(minioClient, bucketName);
 
-      if (transaction.documentsurl) {
-        const elementsToDelete = transaction.documentsurl.filter(a => !documents.some(b => a === b.url));
+      if (transaction.documentsurl && documentsArray.length > 0) {
+        const elementsToDelete = transaction.documentsurl.filter(a => !documentsArray.some(b => a === b.url));
 
         for (const element of elementsToDelete) {
           try {
@@ -160,7 +163,7 @@ const transaction = async (fastify) => {
       const getFileNameFromUrl = (url) => url.split('/').pop();
 
       const documentsList = [];
-      for (const document of documents) {
+      for (const document of documentsArray) {
         if (document.isNew) {
           const fileName = getFileNameFromUrl(document.url);
           const url = `${transaction.categoryname}/${transaction.subjectname}/`
