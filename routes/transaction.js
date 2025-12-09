@@ -980,7 +980,7 @@ const transaction = async (fastify) => {
         RETURNING id
       `;
 
-      const result = await fastify.pg[db].query(insertQuery, [
+      const result = await fastify.pg.query(insertQuery, [
         db,
         transactionId,
         originalDescription,
