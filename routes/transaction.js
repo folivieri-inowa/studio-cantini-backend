@@ -925,6 +925,93 @@ const transaction = async (fastify) => {
     }
   });
 
+  // Endpoint per salvare il feedback sulle classificazioni AI
+  fastify.post('/classification-feedback', { preHandler: fastify.authenticate }, async (request, reply) => {
+    const {
+      db,
+      transactionId,
+      originalDescription,
+      amount,
+      transactionDate,
+      suggestedCategoryId,
+      suggestedSubjectId,
+      suggestedDetailId,
+      suggestionConfidence,
+      suggestionMethod,
+      correctedCategoryId,
+      correctedSubjectId,
+      correctedDetailId,
+    } = request.body;
+
+    try {
+      // Verifica che ci sia stata effettivamente una correzione
+      const wasCorrection = 
+        suggestedCategoryId !== correctedCategoryId ||
+        suggestedSubjectId !== correctedSubjectId ||
+        suggestedDetailId !== correctedDetailId;
+
+      if (!wasCorrection) {
+        // Non è una correzione, l'utente ha accettato il suggerimento così com'è
+        return reply.code(200).send({ 
+          message: 'No correction needed, suggestion was accepted',
+          feedbackSaved: false,
+          status: 200 
+        });
+      }
+
+      // Salva il feedback per future classificazioni
+      const insertQuery = `
+        INSERT INTO classification_feedback (
+          db,
+          transaction_id,
+          original_description,
+          amount,
+          transaction_date,
+          suggested_category_id,
+          suggested_subject_id,
+          suggested_detail_id,
+          suggestion_confidence,
+          suggestion_method,
+          corrected_category_id,
+          corrected_subject_id,
+          corrected_detail_id,
+          created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+        RETURNING id
+      `;
+
+      const result = await fastify.pg[db].query(insertQuery, [
+        db,
+        transactionId,
+        originalDescription,
+        amount,
+        transactionDate,
+        suggestedCategoryId,
+        suggestedSubjectId,
+        suggestedDetailId,
+        suggestionConfidence,
+        suggestionMethod,
+        correctedCategoryId,
+        correctedSubjectId,
+        correctedDetailId,
+        request.user.email,
+      ]);
+
+      return reply.code(200).send({ 
+        message: 'Classification feedback saved successfully',
+        feedbackSaved: true,
+        feedbackId: result.rows[0].id,
+        status: 200 
+      });
+    } catch (error) {
+      console.error('Error saving classification feedback:', error);
+      return reply.code(400).send({ 
+        message: error.message, 
+        status: 400 
+      });
+    }
+  });
+
   // L'endpoint per importare un file Excel e associare i movimenti ad una transazione esistente
   // è stato spostato in transaction-import-associated.js
 };
