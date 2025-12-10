@@ -4,7 +4,7 @@
  */
 
 const smartRules = [
-  // COMMISSIONI BANCARIE
+  // COMMISSIONI BANCARIE - Solo vere commissioni (importi piccoli)
   {
     name: 'Commissioni Bancarie - Pattern esplicito',
     priority: 100,
@@ -12,18 +12,16 @@ const smartRules = [
       const desc = transaction.description.toUpperCase();
       const amount = Math.abs(transaction.amount);
       
-      // Pattern: "COMMISSIONI" + indicatori bancari + importo piccolo
+      // Solo commissioni con importi tipicamente bancari (< 5€)
       const hasCommissioni = desc.includes('COMMISSIONI');
-      const hasBankIndicator = desc.includes('CCBS') || desc.includes('BANCA') || 
-                               desc.includes('BONIFICO') || desc.includes('ADDEBITO');
       const isSmallAmount = amount >= 0.3 && amount <= 5;
       
-      return hasCommissioni && hasBankIndicator && isSmallAmount;
+      return hasCommissioni && isSmallAmount;
     },
     category: 'Banche',
     subject: 'Spese bancarie',
     confidence: 98,
-    reasoning: 'Commissione bancaria identificata da pattern esplicito e importo tipico'
+    reasoning: 'Commissione bancaria identificata da importo tipico (< 5€)'
   },
   
   // SPESE BANCARIE GENERICHE (piccoli importi con keywords)
