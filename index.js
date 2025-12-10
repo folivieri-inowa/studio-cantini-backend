@@ -21,6 +21,7 @@ import {
   UploadRoutes,
   AnomalieRoutes,
   ClassificationFeedbackRoutes,
+  SmartClassifierRoutes,
   // GroupsRoutes, // Disabled - using consultative approach in report.js
 } from './routes/index.js';
 // Migrazione database
@@ -69,6 +70,7 @@ fastify.register(FileManagerRoutes, { prefix: '/v1/file-manager' })
 fastify.register(ScadenziarioRoutes, { prefix: '/v1/scadenziario' })
 fastify.register(AnomalieRoutes, { prefix: '/v1/anomalie' })
 fastify.register(ClassificationFeedbackRoutes, { prefix: '/v1/classification-feedback' })
+fastify.register(SmartClassifierRoutes, { prefix: '/v1/transaction' })
 // fastify.register(GroupsRoutes, { prefix: '/v1/groups' }) // Disabled - using consultative approach in report.js
 // fastify.register(SetupRoutes, { prefix: '/v1/setup' })
 // fastify.register(MLAnalysisRoutes, { prefix: '/v1/ml-analysis' })
