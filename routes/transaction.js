@@ -926,7 +926,7 @@ const transaction = async (fastify) => {
   });
 
   // Endpoint per salvare il feedback sulle classificazioni AI
-  fastify.post('/classification-feedback', { preHandler: fastify.authenticate }, async (request, reply) => {
+  fastify.post('/classification-feedback', async (request, reply) => {
     const {
       db,
       transactionId,
@@ -994,7 +994,7 @@ const transaction = async (fastify) => {
         correctedCategoryId,
         correctedSubjectId,
         correctedDetailId,
-        request.user.email,
+        request.user?.email || 'system',
       ]);
 
       return reply.code(200).send({ 
@@ -1007,6 +1007,71 @@ const transaction = async (fastify) => {
       console.error('Error saving classification feedback:', error);
       return reply.code(400).send({ 
         message: error.message, 
+        status: 400 
+      });
+    }
+  });
+
+  // Endpoint per cercare transazioni simili
+  fastify.post('/search-similar', async (request, reply) => {
+    const { description, db, transactionId, limit = 10 } = request.body;
+
+    if (!description || !db) {
+      return reply.code(400).send({ 
+        message: 'Description and db are required',
+        status: 400 
+      });
+    }
+
+    try {
+      const query = `
+        SELECT 
+          t.id,
+          t.description,
+          t.date,
+          t.amount,
+          t.paymenttype as payment_type,
+          t.note,
+          o.name as owner_name,
+          c.name as category_name,
+          s.name as subject_name,
+          d.name as detail_name,
+          similarity(t.description, $1) as similarity_score
+        FROM transactions t
+        LEFT JOIN owners o ON t.ownerid = o.id
+        LEFT JOIN categories c ON t.categoryid = c.id
+        LEFT JOIN subjects s ON t.subjectid = s.id
+        LEFT JOIN details d ON t.detailid = d.id
+        WHERE t.db = $2 
+          AND t.categoryid IS NOT NULL
+          AND similarity(t.description, $1) > 0.3
+          AND ($4::uuid IS NULL OR t.id != $4)
+        ORDER BY similarity_score DESC
+        LIMIT $3
+      `;
+
+      const { rows } = await fastify.pg.query(query, [description, db, limit, transactionId || null]);
+
+      return reply.code(200).send({
+        similar: rows.map(row => ({
+          id: row.id,
+          description: row.description,
+          date: row.date,
+          amount: row.amount,
+          paymentType: row.payment_type,
+          note: row.note,
+          ownerName: row.owner_name,
+          categoryName: row.category_name,
+          subjectName: row.subject_name,
+          detailName: row.detail_name,
+          similarity: Math.round(row.similarity_score * 100),
+        })),
+        status: 200
+      });
+    } catch (error) {
+      console.error('Error searching similar transactions:', error);
+      return reply.code(400).send({ 
+        message: error.message,
         status: 400 
       });
     }
