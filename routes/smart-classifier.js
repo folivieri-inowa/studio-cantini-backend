@@ -12,8 +12,9 @@ const smartRules = [
       const desc = transaction.description.toUpperCase();
       const amount = Math.abs(transaction.amount);
       
-      // Solo commissioni con importi tipicamente bancari (< 5€)
-      const hasCommissioni = desc.includes('COMMISSIONI');
+      // Pattern flessibili per "commissioni" (comm., commis., commissioni, ecc.)
+      const commissionPatterns = ['COMMISSIONI', 'COMMISS', 'COMM.', 'COMM ', 'COMM:'];
+      const hasCommissioni = commissionPatterns.some(pattern => desc.includes(pattern));
       const isSmallAmount = amount >= 0.3 && amount <= 5;
       
       return hasCommissioni && isSmallAmount;
