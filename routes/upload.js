@@ -9,7 +9,7 @@ const upload = async (fastify) => {
 
     try {
       const minioClient = new Minio.Client({
-        endPoint: 'minio.studiocantini.inowa.it',
+        endPoint: 'minio.studiocantini.wavetech.it',
         port: 443,
         useSSL: true,
         accessKey: 'minioAdmin',
@@ -31,7 +31,7 @@ const upload = async (fastify) => {
       });
 
       // Costruisco l'URL del file
-      const fileUrl = `https://minio.studiocantini.inowa.it/${bucketName}/${objectName}`;
+      const fileUrl = `https://minio.studiocantini.wavetech.it/${bucketName}/${objectName}`;
 
       // reply.send({ message: 'Immagine caricata con successo.', file: uploadedImage, link: fileLink });
       reply.send({ message: 'Immagine caricata con successo.', url: fileUrl });

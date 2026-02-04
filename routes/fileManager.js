@@ -14,7 +14,7 @@ const fileManager = async (fastify) => {
 
   // Configurazione client MinIO
   const getMinioClient = () => new Minio.Client({
-    endPoint: 'minio.studiocantini.inowa.it',
+    endPoint: 'minio.studiocantini.wavetech.it',
     port: 443,
     useSSL: true,
     accessKey: 'minioAdmin',
@@ -199,7 +199,7 @@ const fileManager = async (fastify) => {
                 name: fileName,
                 size: file.size,
                 type: fileName.split('.').pop(),
-                url: `https://minio.studiocantini.inowa.it/${db}/${file.name}`,
+                url: `https://minio.studiocantini.wavetech.it/${db}/${file.name}`,
                 modifiedDate: file.lastModified,
               });
               
@@ -247,7 +247,7 @@ const fileManager = async (fastify) => {
                   name: fileName,
                   size: file.size,
                   type: fileName.split('.').pop(),
-                  url: `https://minio.studiocantini.inowa.it/${db}/${file.name}`,
+                  url: `https://minio.studiocantini.wavetech.it/${db}/${file.name}`,
                   modifiedDate: file.lastModified,
                 });
                 
@@ -295,7 +295,7 @@ const fileManager = async (fastify) => {
                   name: fileName,
                   size: file.size,
                   type: fileName.split('.').pop(),
-                  url: `https://minio.studiocantini.inowa.it/${db}/${file.name}`,
+                  url: `https://minio.studiocantini.wavetech.it/${db}/${file.name}`,
                   modifiedDate: file.lastModified,
                 });
                 
@@ -426,7 +426,7 @@ const fileManager = async (fastify) => {
       });
       
       // Costruisci l'URL del file
-      const fileUrl = `https://minio.studiocantini.inowa.it/${db}/${objectPath}`;
+      const fileUrl = `https://minio.studiocantini.wavetech.it/${db}/${objectPath}`;
       console.log('✅ File caricato con successo! URL:', fileUrl);
       
       reply.send({ 
@@ -462,7 +462,7 @@ const fileManager = async (fastify) => {
       await minioClient.removeObject(db, filePath);
       
       // Se il file è associato a una transazione, rimuovi anche quel collegamento
-      const fileUrl = `https://minio.studiocantini.inowa.it/${db}/${filePath}`;
+      const fileUrl = `https://minio.studiocantini.wavetech.it/${db}/${filePath}`;
       
       const deleteDocumentQuery = `
         DELETE FROM documents

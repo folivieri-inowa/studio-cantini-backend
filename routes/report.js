@@ -59,12 +59,18 @@ const report = async (fastify) => {
         const date = new Date(tx.date);
         const year = date.getFullYear().toString();
         const month = (date.getMonth() + 1).toString().padStart(2, '0');
-        const amount = parseFloat(tx.amount);
+        const amount = tx.amount != null ? parseFloat(tx.amount) : NaN;
         const categoryId = tx.categoryid;
         const categoryName = tx.categoryname || 'Senza Categoria';
         const ownerId = tx.ownerid;
 
         if (!ownerId) return;
+        
+        // Skip transactions with invalid amounts early
+        if (isNaN(amount)) {
+          console.warn(`Skipping transaction ${tx.id}: invalid amount (${tx.amount}) for category ${categoryId}, year ${year}, month ${month}`);
+          return;
+        }
 
         // Initialize the report for the owner
         if (!reportByOwner[ownerId]) {
@@ -123,12 +129,6 @@ const report = async (fastify) => {
         }
 
         // Update global and category totals
-        // Validate amount to prevent NaN corruption
-        if (amount == null || isNaN(amount)) {
-          console.warn(`Invalid amount detected: ${amount} for transaction with category ${categoryId}, year ${year}, month ${month}`);
-          return; // Skip this transaction
-        }
-        
         if (amount >= 0) {
           // Arrotondiamo a 2 decimali per maggiore precisione
           const amountRounded = parseFloat(amount.toFixed(2));
@@ -1374,11 +1374,11 @@ const report = async (fastify) => {
 
       // Process transactions for statistics
       transactions.forEach(transaction => {
-        const amount = parseFloat(transaction.amount);
+        const amount = transaction.amount != null ? parseFloat(transaction.amount) : NaN;
         
         // Validate amount to prevent NaN corruption
-        if (amount == null || isNaN(amount)) {
-          console.warn(`Invalid amount detected in group aggregation: ${transaction.amount} for transaction ${transaction.id}`);
+        if (isNaN(amount)) {
+          console.warn(`Skipping transaction ${transaction.id} in group aggregation: invalid amount (${transaction.amount})`);
           return; // Skip this transaction
         }
         

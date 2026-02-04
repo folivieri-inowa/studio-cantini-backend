@@ -73,7 +73,7 @@ const auth = async (fastify) => {
         ? { ...user, role: userRole.role, db: db }
         : user;
 
-      reply.send({ accessToken: token, user: responseUser });
+      reply.send({ data: { accessToken: token, user: responseUser } });
     } catch (error) {
       console.error(error);
       reply.code(500).send({ message: 'Errore durante il login', status: 500 });

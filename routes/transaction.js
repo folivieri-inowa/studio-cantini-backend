@@ -129,7 +129,7 @@ const transaction = async (fastify) => {
       }
 
       const minioClient = new Minio.Client({
-        endPoint: 'minio.studiocantini.inowa.it',
+        endPoint: 'minio.studiocantini.wavetech.it',
         port: 443,
         useSSL: true,
         accessKey: 'minioAdmin',
@@ -180,7 +180,7 @@ const transaction = async (fastify) => {
           await minioClient.removeObject(bucketTemp, sourceKey);
 
           // Aggiungi il nuovo URL alla lista
-          documentsList.push(`https://minio.studiocantini.inowa.it/${bucketName}/${newObjectName}`);
+          documentsList.push(`https://minio.studiocantini.wavetech.it/${bucketName}/${newObjectName}`);
         }
       }
 
@@ -459,7 +459,7 @@ const transaction = async (fastify) => {
 
       // Gestione dei documenti
       const minioClient = new Minio.Client({
-        endPoint: 'minio.studiocantini.inowa.it',
+        endPoint: 'minio.studiocantini.wavetech.it',
         port: 443,
         useSSL: true,
         accessKey: 'minioAdmin',
@@ -488,7 +488,7 @@ const transaction = async (fastify) => {
             await minioClient.copyObject(bucketName, newObjectName, bucketTemp + sourceKey);
             await minioClient.removeObject(bucketTemp, sourceKey);
 
-            documentsList.push(`https://minio.studiocantini.inowa.it/${bucketName}/${newObjectName}`);
+            documentsList.push(`https://minio.studiocantini.wavetech.it/${bucketName}/${newObjectName}`);
           }
         }
         // Inserisce i documenti nella tabella
