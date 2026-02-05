@@ -18,12 +18,13 @@ RUN yarn install
 # Imposta le variabili d'ambiente
 ENV PROD=true
 ENV NODE_ENV=production
+ENV PORT=9000
 
 # Copia il resto dei file dell'applicazione
 COPY --chown=node:node . .
 
 # Esponi la porta
-EXPOSE 9001
+EXPOSE 9000
 
 # Avvia l'applicazione
 CMD ["yarn", "start"]

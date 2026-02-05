@@ -100,7 +100,7 @@ const auth = async (fastify) => {
       const user = rows[0];
 
       // Generate a JWT token
-      const token = fastify.jwt.sign({ userId: user.id }, {
+      const token = fastify.jwt.sign({ id: user.id }, {
         expiresIn: 14400 // 4 hours in seconds
       });
 
@@ -116,7 +116,7 @@ const auth = async (fastify) => {
   fastify.put('/update', { preHandler: fastify.authenticate }, async (request, reply) => {
     const token = request.headers.authorization.split(' ')[1]; // recuperare il token dalla richiesta
     const decoded = await fastify.jwt.verify(token); // decodificare il token
-    const userId = decoded.userId; // recuperare l'id del cliente dal payload del token
+    const userId = decoded.id; // recuperare l'id del cliente dal payload del token
 
     // Cerca l'utente nel database
     const querySelect = 'SELECT * FROM users WHERE id = $1';
