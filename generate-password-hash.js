@@ -1,7 +1,7 @@
 // Script per generare hash delle password per la tabella users
 // Utilizza bcrypt come il sistema di autenticazione del backend
 
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 // Configurazione
 const SALT_ROUNDS = 12; // Stesso valore usato nel backend per sicurezza

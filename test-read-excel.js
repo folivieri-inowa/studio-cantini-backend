@@ -1,4 +1,4 @@
-import excelToJson from 'convert-excel-to-json';
+import ExcelJS from 'exceljs';
 import fs from 'fs';
 
 try {
@@ -7,44 +7,51 @@ try {
   // Leggi il file come buffer
   const fileBuffer = fs.readFileSync('../4945.xlsx');
   
-  // Prova a leggere con il metodo standard
-  const result1 = excelToJson({
-    sourceFile: '../4945.xlsx'
-  });
+  // Prova a leggere con ExcelJS
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(fileBuffer);
   
-  console.log('\n=== Metodo 1: sourceFile ===');
-  console.log('Fogli disponibili:', Object.keys(result1));
+  console.log('\n=== Metodo 1: ExcelJS ===');
+  console.log('Fogli disponibili:', workbook.worksheets.map(ws => ws.name));
   
-  for (const sheetName of Object.keys(result1)) {
-    console.log(`\n--- Foglio: ${sheetName} ---`);
-    console.log('Numero di righe:', result1[sheetName].length);
-    console.log('Prime 3 righe:', JSON.stringify(result1[sheetName].slice(0, 3), null, 2));
+  for (const worksheet of workbook.worksheets) {
+    console.log(`\n--- Foglio: ${worksheet.name} ---`);
+    console.log('Numero di righe:', worksheet.rowCount);
+    const rows = [];
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber <= 3) {
+        const values = {};
+        row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+          const colLetter = String.fromCharCode(64 + colNumber);
+          values[colLetter] = cell.value;
+        });
+        rows.push(values);
+      }
+    });
+    console.log('Prime 3 righe:', JSON.stringify(rows, null, 2));
   }
   
-  // Prova con il metodo usato dall'applicazione
-  console.log('\n\n=== Metodo 2: source (buffer) con mapping colonne ===');
-  const result2 = excelToJson({
-    source: fileBuffer,
-    sheets: [{
-      header: { rows: 0 },
-      name: 'Lista Movimenti',
-      columnToKey: {
-        A: 'date',
-        B: 'description',
-        C: 'negativeAmount',
-        D: 'positiveAmount',
+  // Prova con il mappaggio colonne (foglio "Lista Movimenti")
+  console.log('\n\n=== Metodo 2: Foglio "Lista Movimenti" con mapping colonne ===');
+  const ws = workbook.getWorksheet('Lista Movimenti');
+  
+  if (ws) {
+    console.log('Righe in "Lista Movimenti":', ws.rowCount);
+    const mappedRows = [];
+    ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber <= 5) {
+        mappedRows.push({
+          date: row.getCell(1).value,
+          description: row.getCell(2).value,
+          negativeAmount: row.getCell(3).value,
+          positiveAmount: row.getCell(4).value,
+        });
       }
-    }]
-  });
-  
-  console.log('Fogli disponibili:', Object.keys(result2));
-  
-  if (result2['Lista Movimenti']) {
-    console.log('Righe in "Lista Movimenti":', result2['Lista Movimenti'].length);
-    console.log('Prime 5 righe:', JSON.stringify(result2['Lista Movimenti'].slice(0, 5), null, 2));
+    });
+    console.log('Prime 5 righe:', JSON.stringify(mappedRows, null, 2));
   } else {
     console.log('⚠️ Il foglio "Lista Movimenti" non è stato trovato!');
-    console.log('Fogli disponibili nel file:', Object.keys(result1));
+    console.log('Fogli disponibili nel file:', workbook.worksheets.map(ws => ws.name));
   }
   
 } catch (error) {

@@ -13,7 +13,7 @@
       console.log('📊 Metadata ricevuti:', { db, owner, category, subject, details });
 
       // Estrae i dati dal file Excel
-      const excelToJson = ConvertExcelToJson(bufferedFile);
+      const excelToJson = await ConvertExcelToJson(bufferedFile);
       console.log('📋 Dati estratti dal file:', excelToJson);
 
       if (!excelToJson || excelToJson.length === 0) {

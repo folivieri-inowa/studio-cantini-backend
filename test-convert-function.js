@@ -7,8 +7,8 @@ try {
   // Leggi il file come buffer
   const fileBuffer = fs.readFileSync('../4945.xlsx');
   
-  // Usa la funzione aggiornata
-  const movements = ConvertExcelToJson(fileBuffer);
+  // Usa la funzione aggiornata (ora async)
+  const movements = await ConvertExcelToJson(fileBuffer);
   
   console.log('\n=== Risultati ===');
   console.log('Numero totale di movimenti:', movements.length);

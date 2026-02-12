@@ -1,5 +1,8 @@
-import Fastify from 'fastify';
+// Load environment variables FIRST - before any imports that use env vars
 import dotenv from 'dotenv';
+dotenv.config();
+
+import Fastify from 'fastify';
 import cors from '@fastify/cors'
 import fastifyMultipart from '@fastify/multipart';
 import fastifyPostgres from '@fastify/postgres';
@@ -22,15 +25,13 @@ import {
   AnomalieRoutes,
   ClassificationFeedbackRoutes,
   SmartClassifierRoutes,
+  ClassifierRoutes,
   // GroupsRoutes, // Disabled - using consultative approach in report.js
 } from './routes/index.js';
 // Migrazione database
 import { runMigrations } from './lib/migrations.js';
 // Verifica schema database
 import verifyDatabaseSchema from './lib/verifyDatabaseSchema.js';
-
-// Load environment variables from .env file
-dotenv.config();
 
 // Require the framework and instantiate it
 const fastify = Fastify({ logger: false });
@@ -71,6 +72,7 @@ fastify.register(ScadenziarioRoutes, { prefix: '/v1/scadenziario' })
 fastify.register(AnomalieRoutes, { prefix: '/v1/anomalie' })
 fastify.register(ClassificationFeedbackRoutes, { prefix: '/v1/classification-feedback' })
 fastify.register(SmartClassifierRoutes, { prefix: '/v1/transaction' })
+fastify.register(ClassifierRoutes, { prefix: '/v1/classification' })
 // fastify.register(GroupsRoutes, { prefix: '/v1/groups' }) // Disabled - using consultative approach in report.js
 // fastify.register(SetupRoutes, { prefix: '/v1/setup' })
 // fastify.register(MLAnalysisRoutes, { prefix: '/v1/ml-analysis' })

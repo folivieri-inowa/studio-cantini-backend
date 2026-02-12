@@ -3,7 +3,7 @@
 
 import Fastify from 'fastify';
 import fastifyPostgres from '@fastify/postgres';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import dotenv from 'dotenv';
 
 dotenv.config();

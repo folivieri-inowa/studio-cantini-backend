@@ -1,7 +1,7 @@
 // Fastify
 import fastifyJwt from "@fastify/jwt";
 // Utils
-import bcrypt from "bcrypt";
+import bcrypt from "bcryptjs";
 import { checkUserLogin } from '../lib/utils.js';
 
 const auth = async (fastify) => {

@@ -1,5 +1,6 @@
 import * as Minio from 'minio';
 import { ConvertExcelToJson, detectPaymentMethod, parseDate } from '../lib/utils.js';
+import { cache } from '../lib/cache.js';
 
 const transaction = async (fastify) => {
   async function ensureBucketExists(minioClient, bucketName) {
@@ -517,14 +518,37 @@ const transaction = async (fastify) => {
       console.log('📂 Inizio importazione batch...');
       
       const file = await request.file();
+      
+      // Log dettagli del file per debug
+      console.log('📄 File info:', {
+        filename: file.filename,
+        encoding: file.encoding,
+        mimetype: file.mimetype,
+        fieldsKeys: Object.keys(file.fields || {})
+      });
+      
       const bufferedFile = await file.toBuffer();
-      console.log('✅ File ricevuto!');
+      console.log('✅ File ricevuto! Buffer size:', bufferedFile.length);
 
-      const { db, owner, category, subject, details } = JSON.parse(file.fields.metadata.value);
+      // Estrai metadata in modo sicuro
+      const metadataField = file.fields?.metadata;
+      if (!metadataField) {
+        console.error('❌ Campo metadata mancante!');
+        return reply.status(400).send({ error: 'Missing metadata field' });
+      }
+      
+      // Gestisci sia il caso con .value che senza
+      const metadataString = typeof metadataField === 'string' ? metadataField : metadataField.value;
+      if (!metadataString) {
+        console.error('❌ Valore metadata vuoto!');
+        return reply.status(400).send({ error: 'Empty metadata value' });
+      }
+      
+      const { db, owner, category, subject, details } = JSON.parse(metadataString);
       console.log('📊 Metadata ricevuti:', { db, owner, category, subject, details });
 
       // Estrae i dati dal file Excel
-      const excelToJson = ConvertExcelToJson(bufferedFile);
+      const excelToJson = await ConvertExcelToJson(bufferedFile);
       console.log('📋 Dati estratti dal file:', excelToJson);
 
       if (!excelToJson || excelToJson.length === 0) {
@@ -996,6 +1020,10 @@ const transaction = async (fastify) => {
         correctedDetailId,
         request.user?.email || 'system',
       ]);
+
+      // Invalida cache analytics quando viene aggiunto nuovo feedback
+      cache.deleteNamespace('analytics');
+      cache.deleteNamespace('suggested_rules');
 
       return reply.code(200).send({ 
         message: 'Classification feedback saved successfully',

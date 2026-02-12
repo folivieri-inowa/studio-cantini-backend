@@ -27,7 +27,21 @@ const transactionImportAssociated = async (fastify) => {
       const bufferedFile = await file.toBuffer();
       console.log('✅ File ricevuto!');
 
-      const { db, id, commissions } = JSON.parse(file.fields.metadata.value);
+      // Estrai metadata in modo sicuro
+      const metadataField = file.fields?.metadata;
+      if (!metadataField) {
+        console.error('❌ Campo metadata mancante!');
+        return reply.status(400).send({ error: 'Missing metadata field' });
+      }
+      
+      // Gestisci sia il caso con .value che senza
+      const metadataString = typeof metadataField === 'string' ? metadataField : metadataField.value;
+      if (!metadataString) {
+        console.error('❌ Valore metadata vuoto!');
+        return reply.status(400).send({ error: 'Empty metadata value' });
+      }
+      
+      const { db, id, commissions } = JSON.parse(metadataString);
       console.log('📊 Metadata ricevuti:', { db, id, commissions });
 
       // Verifica che la transazione principale esista
@@ -44,7 +58,7 @@ const transactionImportAssociated = async (fastify) => {
       console.log('✓ Transazione principale trovata:', parentTransaction.id);
 
       // Estrae i dati dal file Excel
-      const excelToJson = ConvertExcelToJson(bufferedFile);
+      const excelToJson = await ConvertExcelToJson(bufferedFile);
       console.log('📋 Dati estratti dal file:', excelToJson);
 
       if (!excelToJson || excelToJson.length === 0) {
