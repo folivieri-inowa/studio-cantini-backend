@@ -15,6 +15,7 @@ import { DeduplicationService } from '../services/deduplication.service.js';
 import { PriorityQueueService } from '../services/priority-queue.service.js';
 import { HybridSearchService } from '../services/hybrid-search.service.js';
 import { sanitizeFileName } from '../../../lib/utils.js';
+import PgBoss from 'pg-boss';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -143,12 +144,20 @@ const archiveRoutes = async (fastify) => {
       // Inizializza repositories
       const documentRepo = new DocumentRepository(fastify.pg);
       const jobRepo = new JobRepository(fastify.pg);
-      const deduplicationService = new DeduplicationService({ 
+      const deduplicationService = new DeduplicationService({
         pgPool: fastify.pg,
         logger: fastify.log || console,
       });
-      // PriorityQueue service richiede pg-boss che non è installato
-      // const queueService = new PriorityQueueService(process.env.POSTGRES_URL);
+
+      // Inizializza pg-boss per l'accodamento job
+      const boss = new PgBoss({
+        connectionString: process.env.POSTGRES_URL,
+        retryLimit: 3,
+        retryDelay: 30,
+        retryBackoff: true,
+        expireInMinutes: 60,
+      });
+      await boss.start();
 
       // Leggi il contenuto del file e calcola hash
       const chunks = [];
@@ -278,13 +287,25 @@ const archiveRoutes = async (fastify) => {
         throw dbError; // Rilancia altri errori
       }
 
-      // 4. Avvia pipeline di processamento tramite priority queue (opzionale)
-      // TODO: Implementare quando pg-boss sarà configurato
-      // await queueService.enqueue('document-processing', {
-      //   documentId: document.id,
-      //   priority: document.priority,
-      //   metadata: { ... }
-      // });
+      // 4. Avvia pipeline di processamento tramite pg-boss
+      try {
+        // Accoda job OCR
+        await boss.send('archive-ocr', {
+          documentId: document.id,
+          db: db,
+        }, {
+          priority: document.priority === 'URGENT' ? 100 : 50,
+        });
+        console.log(`✅ Job OCR accodato per documento ${document.id}`);
+
+        // Aggiorna stato documento
+        await documentRepo.updateProcessingStatus(document.id, 'pending');
+      } catch (queueError) {
+        console.error('❌ Errore accodamento job:', queueError);
+        // Non bloccare l'upload se l'accodamento fallisce
+      } finally {
+        await boss.stop();
+      }
 
       // 5. Controllo deduplicazione fuzzy in background (opzionale - richiede embeddings)
       // TODO: Abilitare quando Qdrant/Ollama saranno configurati

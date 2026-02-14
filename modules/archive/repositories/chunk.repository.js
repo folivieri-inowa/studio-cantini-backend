@@ -252,6 +252,43 @@ export class ChunkRepository {
   }
 
   /**
+   * Crea chunk con parametri snake_case (per worker)
+   */
+  async createChunk(chunkData) {
+    const {
+      document_id,
+      db,
+      chunk_index,
+      chunk_text,
+      embedding,
+      page_start,
+      page_end,
+    } = chunkData;
+
+    const query = `
+      INSERT INTO archive_chunks (
+        document_id, chunk_text, chunk_order, chunk_type,
+        char_start, char_end, page_number, embedding_model
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING *
+    `;
+
+    const values = [
+      document_id,
+      chunk_text,
+      chunk_index,
+      'text',
+      0,
+      chunk_text?.length || 0,
+      page_start,
+      'nomic-embed-text',
+    ];
+
+    const result = await this.pg.query(query, values);
+    return result.rows[0];
+  }
+
+  /**
    * Aggiorna Qdrant ID
    */
   async updateQdrantId(id, qdrantId) {

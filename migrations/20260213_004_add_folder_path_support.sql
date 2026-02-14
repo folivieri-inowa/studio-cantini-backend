@@ -52,31 +52,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
--- View per navigazione cartelle (simile a Finder)
-CREATE OR REPLACE VIEW archive_folders AS
-WITH folder_items AS (
-    -- Estrai tutte le cartelle dalla gerarchia
-    SELECT DISTINCT
-        db,
-        unnest(folder_path_array) as folder_name,
-        generate_subscripts(folder_path_array, 1) as level,
-        folder_path_array[1:generate_subscripts(folder_path_array, 1)] as path_array,
-        array_to_string(folder_path_array[1:generate_subscripts(folder_path_array, 1)], '/') as full_path
-    FROM archive_documents
-    WHERE folder_path_array IS NOT NULL
-)
-SELECT 
-    db,
-    folder_name,
-    level,
-    full_path,
-    path_array,
-    CASE 
-        WHEN level > 1 THEN array_to_string(path_array[1:level-1], '/')
-        ELSE NULL
-    END as parent_path,
-    COUNT(*) OVER (PARTITION BY db, full_path) as item_count
-FROM folder_items;
+-- NOTA: La view archive_folders è stata rimossa.
+-- Viene sostituita dalla tabella archive_folders nella migration 20260214_001.
 
 -- Commenti
 COMMENT ON COLUMN archive_documents.folder_path IS 'Percorso completo cartelle separato da / (es: autovetture/Mercedes/assicurazione)';

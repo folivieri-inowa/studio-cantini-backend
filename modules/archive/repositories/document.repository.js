@@ -302,13 +302,27 @@ export class DocumentRepository {
    */
   async incrementRetryCount(id) {
     const query = `
-      UPDATE archive_documents 
+      UPDATE archive_documents
       SET retry_count = retry_count + 1,
           last_retry_at = CURRENT_TIMESTAMP
       WHERE id = $1
       RETURNING *
     `;
     const result = await this.pg.query(query, [id]);
+    return result.rows[0];
+  }
+
+  /**
+   * Aggiorna testo pulito (dopo cleaning)
+   */
+  async updateCleanedText(id, cleanedText) {
+    const query = `
+      UPDATE archive_documents
+      SET cleaned_text = $1
+      WHERE id = $2
+      RETURNING *
+    `;
+    const result = await this.pg.query(query, [cleanedText, id]);
     return result.rows[0];
   }
 }
