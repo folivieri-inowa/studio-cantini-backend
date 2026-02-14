@@ -26,6 +26,7 @@ import {
   ClassificationFeedbackRoutes,
   SmartClassifierRoutes,
   ClassifierRoutes,
+  ArchiveRoutes,
   // GroupsRoutes, // Disabled - using consultative approach in report.js
 } from './routes/index.js';
 // Migrazione database
@@ -54,7 +55,12 @@ fastify.register(cors, {
 });
 
 // Multipart form data
-fastify.register(fastifyMultipart);
+fastify.register(fastifyMultipart, {
+  limits: {
+    fileSize: 100 * 1024 * 1024, // 100MB max file size
+    files: 10, // max 10 files per request
+  },
+});
 
 // Declare a routes
 fastify.register(AuthRoutes, { prefix: '/v1/auth' })
@@ -73,6 +79,7 @@ fastify.register(AnomalieRoutes, { prefix: '/v1/anomalie' })
 fastify.register(ClassificationFeedbackRoutes, { prefix: '/v1/classification-feedback' })
 fastify.register(SmartClassifierRoutes, { prefix: '/v1/transaction' })
 fastify.register(ClassifierRoutes, { prefix: '/v1/classification' })
+fastify.register(ArchiveRoutes, { prefix: '/v1/archive' })
 // fastify.register(GroupsRoutes, { prefix: '/v1/groups' }) // Disabled - using consultative approach in report.js
 // fastify.register(SetupRoutes, { prefix: '/v1/setup' })
 // fastify.register(MLAnalysisRoutes, { prefix: '/v1/ml-analysis' })
