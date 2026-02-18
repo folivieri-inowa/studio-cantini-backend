@@ -19,11 +19,14 @@ npm run check-migrations # Check migration status
 npm run validate-migrations # Validate migration files
 
 # Archive Workers (Intelligent Document Processing)
-npm run worker:ocr       # OCR worker (Ollama LLaVA)
+npm run worker:ocr       # OCR worker (Docling primary, LLaVA fallback)
 npm run worker:cleaning  # Text cleaning worker
 npm run worker:embedding # Embedding generation worker
 npm run workers:all      # Run all workers concurrently
 npm run reconciliation   # PostgreSQL/Qdrant reconciliation job
+
+# OCR Infrastructure
+docker compose up -d  # Start all services (Docling, Qdrant, MinIO, Worker)
 ```
 
 ## Architecture
@@ -49,10 +52,30 @@ Routes are defined in `index.js` and mounted under `/v1/` prefix:
 4-stage fallback: Rule-based → Exact match → Semantic search → Manual review
 
 **Intelligent Archive Module** (`modules/archive/`):
-- OCR Worker: Extracts text using Ollama LLaVA
+- **OCR Worker**: Extracts text using Docling (IBM) with fallback to Ollama LLaVA
+  - Docling: PDF-native extraction with table structure, runs on CPU
+  - Supports PDF, PNG, JPG, TIFF with automatic format detection
+  - Tesseract OCR engine with Italian language support
 - Cleaning Worker: Text normalization using LLM
 - Embedding Worker: Semantic chunking + Qdrant vector storage
 - Hybrid Search: Full-text (PostgreSQL) + semantic (Qdrant) with RRF
+
+### OCR Infrastructure
+
+Docling OCR Service runs as a Docker container (CPU-optimized):
+```bash
+# Build and start Docling
+docker compose -f docker-compose.docling.yml up --build -d
+
+# Check status
+curl http://localhost:5001/health
+```
+
+Configuration (`.env`):
+```
+DOCLING_URL=http://localhost:5001
+USE_DOCLING_OCR=true  # Set to false to use only LLaVA
+```
 
 ### Database Migrations
 
@@ -76,6 +99,10 @@ MINIO_ACCESS_KEY=...
 MINIO_SECRET_KEY=...
 OLLAMA_URL=http://localhost:11434
 QDRANT_URL=http://localhost:6333
+
+# OCR Configuration
+DOCLING_URL=http://localhost:5001
+USE_DOCLING_OCR=true  # Use Docling for PDF OCR (fallback to LLaVA if false/unavailable)
 ```
 
 ## Key Dependencies
@@ -92,4 +119,4 @@ QDRANT_URL=http://localhost:6333
 - No ESLint/Prettier configuration exists
 - Server runs migrations automatically on startup
 - Workers are separate processes that must be started independently
-- Archive module requires external services: PostgreSQL, Qdrant, MinIO, Ollama
+- Archive module requires: PostgreSQL, Qdrant, MinIO, Docling (Docker), Ollama (host)

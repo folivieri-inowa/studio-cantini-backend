@@ -1,0 +1,40 @@
+# Docling OCR Service - Build locale
+# Servizio OCR self-hosted per estrazione testo da PDF e immagini
+
+services:
+  docling-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile.docling
+    container_name: docling-ocr
+    ports:
+      - "5001:5001"
+    environment:
+      - DOCLING_OCR_ENGINE=tesseract
+      - DOCLING_DEVICE=cpu
+      - DOCLING_NUM_THREADS=4
+      - UVICORN_WORKERS=1
+      - UVICORN_HOST=0.0.0.0
+      - UVICORN_PORT=5001
+    volumes:
+      # Cache per modelli
+      - docling-models:/root/.cache/docling
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    restart: unless-stopped
+
+volumes:
+  docling-models:
+    driver: local

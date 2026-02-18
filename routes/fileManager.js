@@ -1,4 +1,4 @@
-import * as Minio from 'minio';
+import { createMinioClient, ensureBucketExists, getMinioBaseUrl } from '../lib/minio-config.js';
 import { sanitizeFileName } from '../lib/utils.js';
 
 const fileManager = async (fastify) => {
@@ -13,20 +13,11 @@ const fileManager = async (fastify) => {
   };
 
   // Configurazione client MinIO
-  const getMinioClient = () => new Minio.Client({
-    endPoint: 'minio.studiocantini.wavetech.it',
-    port: 443,
-    useSSL: true,
-    accessKey: 'minioAdmin',
-    secretKey: 'Inowa2024',
-  });
+  const getMinioClient = () => createMinioClient();
 
   // Funzione per verificare/creare bucket
-  const ensureBucketExists = async (minioClient, bucketName) => {
-    const bucketExists = await minioClient.bucketExists(bucketName);
-    if (!bucketExists) {
-      await minioClient.makeBucket(bucketName, 'us-east-1');
-    }
+  const ensureBucketExistsLocal = async (minioClient, bucketName) => {
+    await ensureBucketExists(minioClient, bucketName);
   };
 
   // Funzione per ottenere i file da Minio
@@ -138,7 +129,7 @@ const fileManager = async (fastify) => {
 
       try {
         // Assicurati che il bucket esista
-        await ensureBucketExists(minioClient, db);
+        await ensureBucketExistsLocal(minioClient, db);
         
         // Recupera i file da Minio
         const files = await getDataFromMinio(db);
@@ -199,7 +190,7 @@ const fileManager = async (fastify) => {
                 name: fileName,
                 size: file.size,
                 type: fileName.split('.').pop(),
-                url: `https://minio.studiocantini.wavetech.it/${db}/${file.name}`,
+                url: `${getMinioBaseUrl()}/${db}/${file.name}`,
                 modifiedDate: file.lastModified,
               });
               
@@ -247,7 +238,7 @@ const fileManager = async (fastify) => {
                   name: fileName,
                   size: file.size,
                   type: fileName.split('.').pop(),
-                  url: `https://minio.studiocantini.wavetech.it/${db}/${file.name}`,
+                  url: `${getMinioBaseUrl()}/${db}/${file.name}`,
                   modifiedDate: file.lastModified,
                 });
                 
@@ -295,7 +286,7 @@ const fileManager = async (fastify) => {
                   name: fileName,
                   size: file.size,
                   type: fileName.split('.').pop(),
-                  url: `https://minio.studiocantini.wavetech.it/${db}/${file.name}`,
+                  url: `${getMinioBaseUrl()}/${db}/${file.name}`,
                   modifiedDate: file.lastModified,
                 });
                 
@@ -410,7 +401,7 @@ const fileManager = async (fastify) => {
       const minioClient = getMinioClient();
       
       // Assicurati che il bucket esista
-      await ensureBucketExists(minioClient, db);
+      await ensureBucketExistsLocal(minioClient, db);
       
       // Carica il file su MinIO
       console.log('⬆️  Caricando file su MinIO...');
@@ -426,7 +417,7 @@ const fileManager = async (fastify) => {
       });
       
       // Costruisci l'URL del file
-      const fileUrl = `https://minio.studiocantini.wavetech.it/${db}/${objectPath}`;
+      const fileUrl = `${getMinioBaseUrl()}/${db}/${objectPath}`;
       console.log('✅ File caricato con successo! URL:', fileUrl);
       
       reply.send({ 
@@ -462,7 +453,7 @@ const fileManager = async (fastify) => {
       await minioClient.removeObject(db, filePath);
       
       // Se il file è associato a una transazione, rimuovi anche quel collegamento
-      const fileUrl = `https://minio.studiocantini.wavetech.it/${db}/${filePath}`;
+      const fileUrl = `${getMinioBaseUrl()}/${db}/${filePath}`;
       
       const deleteDocumentQuery = `
         DELETE FROM documents

@@ -21,9 +21,10 @@ backend/modules/archive/
 ├── routes/            # API endpoints
 │   └── archive.routes.js              # Routes modulo archivio
 ├── workers/           # Worker asincroni
-│   ├── ocr.worker.js                  # Estrazione testo (Ollama LLaVA)
-│   ├── cleaning.worker.js             # Pulizia testo (Ollama)
-│   └── embedding.worker.js            # Chunking + embedding (Qdrant)
+│   ├── archive-worker.js              # Worker unificato (OCR/Cleaning/Embedding)
+│   ├── ocr.worker.js                  # Estrazione testo (legacy)
+│   ├── cleaning.worker.js             # Pulizia testo (legacy)
+│   └── embedding.worker.js            # Chunking + embedding (legacy)
 └── jobs/              # Scheduled jobs
     └── reconciliation.cron.js         # Reconciliation notturna
 ```
@@ -36,14 +37,19 @@ backend/modules/archive/
 - **MinIO**: Object storage per file
 
 ### AI & ML
-- **Ollama**: Modelli AI locali
-  - `llava:latest`: Vision model per OCR
-  - `llama3.2:latest`: Text model per cleaning
+- **Docling (IBM)**: OCR PDF-native con supporto tabelle
+  - Container Docker CPU-optimized
+  - Tesseract OCR engine con supporto italiano
+  - Output Markdown con struttura tabellare
+- **Ollama**: Modelli AI locali (fallback/enhancement)
+  - `llava:latest`: Vision model per OCR immagini
+  - `mistral-nemo:latest`: Text model per estrazione metadata
   - `nomic-embed-text`: Embedding model (768 dim)
 
 ### Queue & Workers
 - **pg-boss**: Priority queue per job asincroni
-- **Node.js Workers**: OCR, Cleaning, Embedding
+- **Node.js Worker Unificato**: Gestisce OCR, Metadata, Cleaning, Embedding in un unico container
+- **Docker Compose**: Setup containerizzato completo
 
 ## Setup
 
@@ -52,24 +58,32 @@ backend/modules/archive/
 Aggiungi al file `backend/.env`:
 
 ```bash
-# MinIO
-MINIO_ENDPOINT=minio.studiocantini.wavetech.it
-MINIO_PORT=443
-MINIO_USE_SSL=true
-MINIO_ACCESS_KEY=minioAdmin
-MINIO_SECRET_KEY=Inowa2024
+# MinIO (usa localhost:9002 per container locale, o endpoint remoto per produzione)
+MINIO_ENDPOINT=localhost
+MINIO_PORT=9002
+MINIO_USE_SSL=false
+MINIO_ACCESS_KEY=minioadmin
+MINIO_SECRET_KEY=minioadmin123
 MINIO_ARCHIVE_BUCKET=archive
 
-# Ollama
+# Ollama (deve girare sull'host)
 OLLAMA_URL=http://localhost:11434
 OLLAMA_VISION_MODEL=llava:latest
-OLLAMA_TEXT_MODEL=llama3.2:latest
+OLLAMA_METADATA_MODEL=mistral-nemo:latest
 OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 ENABLE_LLM_CLEANING=true
+
+# Docling OCR
+DOCLING_URL=http://localhost:5001
+USE_DOCLING_OCR=true  # true = usa Docling, false = usa solo LLaVA
 
 # Qdrant
 QDRANT_URL=http://localhost:6333
 QDRANT_COLLECTION=archive_documents
+
+# Worker Configuration
+WORKER_TYPE=all  # all = tutti i tipi, oppure: ocr, metadata, cleaning, embedding
+WORKER_ID=local-worker-1
 
 # Reconciliation
 RECONCILIATION_DRY_RUN=false
@@ -115,7 +129,45 @@ ollama pull llama3.2:latest
 ollama pull nomic-embed-text
 ```
 
-### 5. Setup Qdrant
+### 5. Setup Infrastruttura Docker (Consigliato)
+
+Il modo più semplice è usare il Docker Compose unificato nella root del progetto:
+
+```bash
+cd studio_cantini
+docker compose up -d
+```
+
+Questo avvia tutti i servizi necessari:
+- PostgreSQL (porta 5435)
+- MinIO (porta 9002)
+- Qdrant (porta 6333)
+- Docling OCR (porta 5001)
+- Worker unificato (tutti i job types)
+
+Verifica che tutti i servizi siano attivi:
+```bash
+docker compose ps
+curl http://localhost:5001/health  # Docling
+curl http://localhost:6333/        # Qdrant
+```
+
+**Nota**: Ollama deve girare sull'host (non nel container):
+```bash
+ollama serve  # Sul tuo Mac
+```
+
+### 6. Setup Manuale (Alternativa)
+
+Se preferisci non usare Docker Compose, puoi avviare i servizi singolarmente:
+
+**Docling OCR:**
+```bash
+cd backend
+docker compose -f docker-compose.docling.yml up -d
+```
+
+**Qdrant:**
 
 Avvia Qdrant con Docker:
 
@@ -139,16 +191,25 @@ Il modulo archivio sarà disponibile su `/v1/archive/*`
 
 ### Avvio Workers
 
-**Tutti i workers insieme:**
+**Con Docker (Consigliato):**
+Il worker è incluso nel Docker Compose e si avvia automaticamente:
 ```bash
-npm run workers:all
+docker compose up -d worker
 ```
 
-**Workers singoli:**
+**In locale (per sviluppo):**
 ```bash
-npm run worker:ocr       # Solo OCR worker
-npm run worker:cleaning  # Solo Cleaning worker
-npm run worker:embedding # Solo Embedding worker
+# Worker unificato (tutti i job types)
+npm run worker:all
+
+# Oppure workers singoli:
+npm run worker:ocr       # Solo OCR
+npm run worker:metadata  # Solo Metadata
+npm run worker:cleaning  # Solo Cleaning
+npm run worker:embedding # Solo Embedding
+
+# Tutti i workers in parallelo (con currently)
+npm run workers:all
 ```
 
 ### Job Reconciliation
@@ -303,14 +364,19 @@ Quando un documento viene caricato, attraversa una pipeline asincrona:
 
 2. OCR WORKER
    ├─ Download da MinIO
-   ├─ Estrazione testo (Ollama LLaVA)
+   ├─ Estrazione testo (Docling OCR, fallback LLaVA)
+   │  ├─ PDF → Docling (markdown nativo con tabelle)
+   │  └─ Immagini → LLaVA (vision model)
    ├─ Salvataggio testo estratto
-   └─ Enqueue job cleaning
+   └─ Enqueue job metadata extraction
 
-3. CLEANING WORKER
-   ├─ Pulizia testo (regex + LLM)
-   ├─ Estrazione metadata (date, importi, P.IVA)
-   ├─ Salvataggio testo pulito
+3. METADATA WORKER
+   ├─ Estrazione metadata strutturati (LLM)
+   │  ├─ Dati documento (numero, data, fornitore)
+   │  ├─ Importi e valute
+   │  ├─ Partite IVA e codici fiscali
+   │  └─ Categorizzazione
+   ├─ Validazione formato
    └─ Enqueue job embedding
 
 4. EMBEDDING WORKER
@@ -396,9 +462,20 @@ curl http://localhost:6333/collections/archive_documents | jq '.result.points_co
 ### Common Issues
 
 **1. Worker non processa job**
-- Verificare connessione Ollama: `curl http://localhost:11434/api/tags`
-- Verificare modelli scaricati: `ollama list`
-- Controllare logs worker per errori
+- Verificare tutti i servizi attivi: `docker compose ps`
+- Verificare Docling: `curl http://localhost:5001/health`
+- Verificare Ollama sull'host: `curl http://localhost:11434/api/tags`
+- Logs worker: `docker compose logs -f worker`
+
+**Docling issues**
+- Verificare container: `docker compose ps | grep docling`
+- Logs: `docker compose logs docling`
+- Riavvio: `docker compose restart docling`
+
+**Ollama non raggiungibile dal worker**
+Il worker in Docker deve collegarsi a Ollama sull'host. Verifica:
+- Ollama in ascolto su 0.0.0.0: `OLLAMA_HOST=0.0.0.0 ollama serve`
+- Variabile `extra_hosts` nel docker-compose.yml configurata correttamente
 
 **2. Qdrant sync issues**
 - Eseguire reconciliation: `npm run reconciliation`
@@ -458,6 +535,7 @@ RECONCILIATION_DRY_RUN=true npm run reconciliation
 
 ## Roadmap
 
+- [x] Integrazione Docling OCR (PDF-native)
 - [ ] Test di integrazione automatizzati
 - [ ] Dashboard monitoring real-time
 - [ ] Support per PDF multipagina (chunking per pagina)

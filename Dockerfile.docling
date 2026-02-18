@@ -1,0 +1,43 @@
+# Dockerfile per Docling OCR - Build locale
+# Basato su Python 3.11 con CPU support
+
+FROM python:3.11-slim
+
+# Installa dipendenze di sistema (incluse librerie per OpenCV)
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr \
+    tesseract-ocr-ita \
+    libtesseract-dev \
+    poppler-utils \
+    libpoppler-cpp-dev \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Installa Docling, docling-serve e EasyOCR
+RUN pip install --no-cache-dir \
+    docling \
+    docling-serve \
+    easyocr \
+    uvicorn \
+    fastapi
+
+# Variabili d'ambiente
+ENV DOCLING_OCR_ENGINE=tesseract
+ENV DOCLING_DEVICE=cpu
+ENV DOCLING_NUM_THREADS=4
+
+# Espone porta
+EXPOSE 5001
+
+# Healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+    CMD curl -f http://localhost:5001/health || exit 1
+
+# Comando di avvio corretto per docling-serve
+CMD ["docling-serve", "run", "--host", "0.0.0.0", "--port", "5001"]

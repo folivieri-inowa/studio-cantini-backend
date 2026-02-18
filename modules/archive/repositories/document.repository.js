@@ -100,7 +100,7 @@ export class DocumentRepository {
    * Trova documenti per database
    */
   async findByDatabase(db, options = {}) {
-    const { limit = 50, offset = 0, status, priority, documentType } = options;
+    const { limit = 50, offset = 0, status, priority, documentType, folderPath } = options;
 
     let query = 'SELECT * FROM archive_documents WHERE db = $1 AND deleted_at IS NULL';
     const values = [db];
@@ -124,6 +124,17 @@ export class DocumentRepository {
       values.push(documentType);
     }
 
+    if (folderPath !== undefined) {
+      paramCount++;
+      if (folderPath === '' || folderPath === null) {
+        query += ` AND (folder_path = $${paramCount} OR folder_path IS NULL)`;
+        values.push('');
+      } else {
+        query += ` AND folder_path = $${paramCount}`;
+        values.push(folderPath);
+      }
+    }
+
     query += ' ORDER BY created_at DESC';
 
     paramCount++;
@@ -143,10 +154,10 @@ export class DocumentRepository {
    */
   async updateProcessingStatus(id, status, errorMessage = null) {
     const query = `
-      UPDATE archive_documents 
-      SET processing_status = $1,
+      UPDATE archive_documents
+      SET processing_status = $1::processing_status,
           error_message = $2,
-          completed_at = CASE WHEN $1 = 'completed' THEN CURRENT_TIMESTAMP ELSE completed_at END
+          completed_at = CASE WHEN $1::processing_status = 'completed'::processing_status THEN CURRENT_TIMESTAMP ELSE completed_at END
       WHERE id = $3
       RETURNING *
     `;
@@ -255,6 +266,17 @@ export class DocumentRepository {
       values.push(filters.documentType);
     }
 
+    if (filters.folderPath !== undefined) {
+      paramCount++;
+      if (filters.folderPath === '' || filters.folderPath === null) {
+        query += ` AND (folder_path = $${paramCount} OR folder_path IS NULL)`;
+        values.push('');
+      } else {
+        query += ` AND folder_path = $${paramCount}`;
+        values.push(filters.folderPath);
+      }
+    }
+
     const result = await this.pg.query(query, values);
     return parseInt(result.rows[0].count);
   }
@@ -323,6 +345,89 @@ export class DocumentRepository {
       RETURNING *
     `;
     const result = await this.pg.query(query, [cleanedText, id]);
+    return result.rows[0];
+  }
+
+  /**
+   * Aggiorna un documento
+   */
+  async update(id, updates) {
+    const fields = Object.keys(updates);
+    if (fields.length === 0) return null;
+
+    const setClause = fields.map((field, index) => `${field} = $${index + 2}`).join(', ');
+    const values = fields.map(field => updates[field]);
+
+    const query = `
+      UPDATE archive_documents
+      SET ${setClause},
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+      RETURNING *
+    `;
+    const result = await this.pg.query(query, [id, ...values]);
+    return result.rows[0];
+  }
+
+  /**
+   * Aggiorna il percorso cartella per tutti i documenti in una cartella
+   */
+  async updateFolderPath(db, oldPath, newPath) {
+    const query = `
+      UPDATE archive_documents
+      SET folder_path = REPLACE(folder_path, $1, $2),
+          storage_path = REPLACE(storage_path, $1, $2)
+      WHERE db = $3 AND folder_path LIKE $4
+    `;
+    await this.pg.query(query, [oldPath, newPath, db, `${oldPath}%`]);
+  }
+
+  /**
+   * Conta i documenti in una cartella
+   */
+  async countByFolder(db, folderPath) {
+    const query = `
+      SELECT COUNT(*) as count
+      FROM archive_documents
+      WHERE db = $1 AND folder_path = $2 AND deleted_at IS NULL
+    `;
+    const result = await this.pg.query(query, [db, folderPath]);
+    return parseInt(result.rows[0].count);
+  }
+
+  /**
+   * Marca documento come fallito definitivamente
+   */
+  async markAsFailed(id, errorMessage) {
+    const query = `
+      UPDATE archive_documents
+      SET processing_status = 'failed'::processing_status,
+          error_message = $2,
+          completed_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+      RETURNING *
+    `;
+    const result = await this.pg.query(query, [id, errorMessage]);
+    return result.rows[0];
+  }
+
+  /**
+   * Resetta documento per nuovo tentativo di processamento
+   * Azzera retry_count, stato e messaggio di errore
+   */
+  async resetForRetry(id) {
+    const query = `
+      UPDATE archive_documents
+      SET processing_status = 'pending'::processing_status,
+          retry_count = 0,
+          error_message = NULL,
+          completed_at = NULL,
+          last_retry_at = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+      RETURNING *
+    `;
+    const result = await this.pg.query(query, [id]);
     return result.rows[0];
   }
 }

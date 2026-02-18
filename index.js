@@ -1,6 +1,21 @@
 // Load environment variables FIRST - before any imports that use env vars
 import dotenv from 'dotenv';
-dotenv.config();
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Carica .env.local prima se esiste (per sviluppo locale)
+const envLocalPath = path.join(__dirname, '.env.local');
+if (fs.existsSync(envLocalPath)) {
+  console.log('📄 Caricamento .env.local per sviluppo locale...');
+  dotenv.config({ path: envLocalPath });
+} else {
+  // Altrimenti carica .env standard
+  dotenv.config();
+}
 
 import Fastify from 'fastify';
 import cors from '@fastify/cors'

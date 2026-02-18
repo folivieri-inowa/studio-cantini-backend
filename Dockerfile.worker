@@ -1,0 +1,26 @@
+# Dockerfile per Archive Worker
+# Worker unificato: OCR + Metadata + Embedding
+
+FROM node:20-alpine
+
+# Installa dipendenze di sistema
+RUN apk add --no-cache curl
+
+# Crea directory app
+WORKDIR /app
+
+# Copia package.json
+COPY package.json ./
+
+# Installa dipendenze (solo production)
+RUN npm install --omit=dev
+
+# Copia codice sorgente
+COPY . .
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:9000/health || exit 1
+
+# Comando di avvio
+CMD ["node", "modules/archive/workers/archive-worker.js"]

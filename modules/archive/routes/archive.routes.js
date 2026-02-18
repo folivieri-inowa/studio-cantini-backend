@@ -4,17 +4,19 @@
  */
 
 import crypto from 'crypto';
-import * as Minio from 'minio';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { DocumentRepository } from '../repositories/document.repository.js';
 import { ChunkRepository } from '../repositories/chunk.repository.js';
 import { JobRepository } from '../repositories/job.repository.js';
+import ChatRepository from '../repositories/chat.repository.js';
 import { DeduplicationService } from '../services/deduplication.service.js';
 import { PriorityQueueService } from '../services/priority-queue.service.js';
 import { HybridSearchService } from '../services/hybrid-search.service.js';
+import { QdrantClient } from '@qdrant/js-client-rest';
 import { sanitizeFileName } from '../../../lib/utils.js';
+import { createMinioClient, getMinioBaseUrl } from '../../../lib/minio-config.js';
 import PgBoss from 'pg-boss';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -22,17 +24,29 @@ const __dirname = path.dirname(__filename);
 
 const archiveRoutes = async (fastify) => {
   // Configurazione storage locale (fallback se MinIO non è disponibile)
-  const USE_LOCAL_STORAGE = process.env.USE_LOCAL_STORAGE === 'true' || true; // Default: usa storage locale
+  const USE_LOCAL_STORAGE = process.env.USE_LOCAL_STORAGE === 'true'; // Default: usa MinIO se configurato
   const LOCAL_STORAGE_PATH = path.join(__dirname, '../../../storage/archive');
-  
-  // Inizializza MinIO client (opzionale se USE_LOCAL_STORAGE è true)
-  const minioClient = !USE_LOCAL_STORAGE ? new Minio.Client({
-    endPoint: process.env.MINIO_ENDPOINT || 'minio.studiocantini.wavetech.it',
-    port: parseInt(process.env.MINIO_PORT) || 443,
-    useSSL: process.env.MINIO_USE_SSL !== 'false',
-    accessKey: process.env.MINIO_ACCESS_KEY || 'minioAdmin',
-    secretKey: process.env.MINIO_SECRET_KEY || 'Inowa2024',
-  }) : null;
+
+  // Debug: log delle variabili d'ambiente MinIO
+  console.log('[MINIO CONFIG] Env vars:', {
+    MINIO_ENDPOINT: process.env.MINIO_ENDPOINT,
+    MINIO_PORT: process.env.MINIO_PORT,
+    MINIO_USE_SSL: process.env.MINIO_USE_SSL,
+    MINIO_ACCESS_KEY: process.env.MINIO_ACCESS_KEY ? '***' : undefined,
+    MINIO_SECRET_KEY: process.env.MINIO_SECRET_KEY ? '***' : undefined,
+    USE_LOCAL_STORAGE: process.env.USE_LOCAL_STORAGE,
+  });
+
+  // Inizializza MinIO client usando la configurazione centralizzata
+  let minioClient = null;
+  if (!USE_LOCAL_STORAGE) {
+    try {
+      minioClient = createMinioClient();
+      console.log('[MINIO CONFIG] Client inizializzato con configurazione centralizzata');
+    } catch (err) {
+      console.error('[MINIO CONFIG] Errore inizializzazione client:', err.message);
+    }
+  }
 
   const bucketName = process.env.MINIO_ARCHIVE_BUCKET || 'archive';
 
@@ -62,22 +76,46 @@ const archiveRoutes = async (fastify) => {
 
     if (!bucketInitPromise) {
       bucketInitPromise = (async () => {
-        const bucketExists = await withTimeout(
-          minioClient.bucketExists(bucketName),
-          5000,
-          `Timeout verifica bucket MinIO: ${bucketName}`
-        );
+        const minioBaseUrl = getMinioBaseUrl();
+        console.log(`[MINIO] Verifica connessione a ${minioBaseUrl}`);
+        console.log(`[MINIO] Bucket target: ${bucketName}`);
+
+        let bucketExists = false;
+        try {
+          console.log('[MINIO] Chiamata bucketExists...');
+          bucketExists = await withTimeout(
+            minioClient.bucketExists(bucketName),
+            10000,
+            `Timeout verifica bucket MinIO: ${bucketName}`
+          );
+          console.log(`[MINIO] bucketExists risultato: ${bucketExists}`);
+        } catch (err) {
+          console.error('[MINIO] ERRORE bucketExists:', err.message || 'Nessun messaggio');
+          console.error('[MINIO] Errore completo:', JSON.stringify(err, Object.getOwnPropertyNames(err), 2));
+          console.error('[MINIO] Stack:', err.stack);
+          throw err;
+        }
 
         if (!bucketExists) {
-          await withTimeout(
-            minioClient.makeBucket(bucketName, 'us-east-1'),
-            5000,
-            `Timeout creazione bucket MinIO: ${bucketName}`
-          );
+          console.log(`[MINIO] Bucket ${bucketName} non esiste, creazione...`);
+          try {
+            await withTimeout(
+              minioClient.makeBucket(bucketName, 'us-east-1'),
+              10000,
+              `Timeout creazione bucket MinIO: ${bucketName}`
+            );
+            console.log(`[MINIO] Bucket ${bucketName} creato con successo`);
+          } catch (err) {
+            console.error('[MINIO] ERRORE creazione bucket:', err.message);
+            throw err;
+          }
+        } else {
+          console.log(`[MINIO] Bucket ${bucketName} già esistente`);
         }
 
         bucketReady = true;
       })().catch((error) => {
+        console.error('[MINIO] ERRORE inizializzazione:', error.message);
         bucketInitPromise = null;
         throw error;
       });
@@ -97,34 +135,61 @@ const archiveRoutes = async (fastify) => {
    * Upload di un nuovo documento nell'archivio
    */
   fastify.post('/upload', async (request, reply) => {
+    console.log('[UPLOAD] 1. Richiesta ricevuta');
+    let boss = null;
     try {
-      // Use request.parts() to handle both file and form fields
+      console.log('[UPLOAD] 2. Inizio parsing multipart...');
+
+      // Collect all parts first - IMPORTANT: we must consume the file stream
+      // during iteration or it will block the multipart parser
       const parts = request.parts();
-      
-      let fileData = null;
+
+      let fileBuffer = null;
+      let fileInfo = null;
       const fields = {};
-      
-      // Iterate through all parts (fields and file)
+
+      console.log('[UPLOAD] 3. Iterazione parti...');
+      // Iterate through all parts - MUST consume file stream immediately
       for await (const part of parts) {
+        console.log('[UPLOAD] 3a. Parte ricevuta:', part.type, part.fieldname);
+
         if (part.type === 'file') {
-          // This is the file
-          fileData = part;
+          // CRITICAL: Must consume file stream immediately during iteration
+          console.log('[UPLOAD] 3b. File trovato, inizio lettura stream:', part.filename, part.mimetype);
+          const chunks = [];
+          try {
+            for await (const chunk of part.file) {
+              chunks.push(chunk);
+            }
+            fileBuffer = Buffer.concat(chunks);
+            fileInfo = {
+              filename: part.filename,
+              mimetype: part.mimetype,
+            };
+            console.log('[UPLOAD] 3c. File letto completamente:', part.filename, 'size:', fileBuffer.length);
+          } catch (fileErr) {
+            console.error('[UPLOAD] ERRORE lettura file:', fileErr);
+            throw new Error(`Errore lettura file: ${fileErr.message}`);
+          }
         } else {
           // This is a form field
           fields[part.fieldname] = part.value;
+          console.log('[UPLOAD] 3d. Campo trovato:', part.fieldname, '=', part.value);
         }
       }
-      
+
+      console.log('[UPLOAD] 4. Parsing completato');
       console.log('=== UPLOAD DEBUG ===');
-      console.log('File received:', !!fileData);
+      console.log('File received:', !!fileBuffer);
+      console.log('File info:', fileInfo);
       console.log('Fields received:', Object.keys(fields));
       console.log('Field values:', fields);
-      
-      if (!fileData) {
+
+      if (!fileBuffer || !fileInfo) {
         return reply.code(400).send({ error: 'Nessun file fornito' });
       }
 
-      const { filename, mimetype, file } = fileData;
+      const { filename, mimetype } = fileInfo;
       const { db, documentType, documentSubtype, title, description, documentDate, fiscalYear, priority, folderPath, folderPathArray, parentFolder } = fields;
 
       // Debug logging
@@ -137,10 +202,13 @@ const archiveRoutes = async (fastify) => {
       });
 
       // Validazione db
+      console.log('[UPLOAD] 5. Validazione DB:', db);
       if (!db) {
+        console.log('[UPLOAD] ERRORE: DB mancante');
         return reply.code(400).send({ error: 'Campo "db" obbligatorio' });
       }
 
+      console.log('[UPLOAD] 6. Inizializzazione repositories...');
       // Inizializza repositories
       const documentRepo = new DocumentRepository(fastify.pg);
       const jobRepo = new JobRepository(fastify.pg);
@@ -150,7 +218,7 @@ const archiveRoutes = async (fastify) => {
       });
 
       // Inizializza pg-boss per l'accodamento job
-      const boss = new PgBoss({
+      boss = new PgBoss({
         connectionString: process.env.POSTGRES_URL,
         retryLimit: 3,
         retryDelay: 30,
@@ -159,16 +227,14 @@ const archiveRoutes = async (fastify) => {
       });
       await boss.start();
 
-      // Leggi il contenuto del file e calcola hash
-      const chunks = [];
-      for await (const chunk of file) {
-        chunks.push(chunk);
-      }
-      const fileBuffer = Buffer.concat(chunks);
+      // Calcola hash dal buffer già letto
+      console.log('[UPLOAD] 7. Calcolo hash...');
       const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
       const fileSize = fileBuffer.length;
+      console.log('[UPLOAD] 8. Hash calcolato:', fileHash.substring(0, 16) + '...', 'size:', fileSize);
 
       // 1. Controllo deduplicazione esatta
+      console.log('[UPLOAD] 9. Controllo deduplicazione...');
       const existingDoc = await deduplicationService.findExactDuplicate(fileHash, db);
       if (existingDoc) {
         return reply.code(409).send({
@@ -183,47 +249,9 @@ const archiveRoutes = async (fastify) => {
       }
 
       // 2. Upload su storage (MinIO o locale)
+      console.log('[UPLOAD] 10. Preparazione upload storage...');
       const sanitizedFilename = sanitizeFileName(filename);
       const timestamp = Date.now();
-      const objectName = `${db}/${timestamp}_${sanitizedFilename}`;
-      
-      let storagePath;
-      let fileUrl;
-      
-      if (USE_LOCAL_STORAGE) {
-        // Salva su filesystem locale
-        const fullPath = path.join(LOCAL_STORAGE_PATH, objectName);
-        const dirPath = path.dirname(fullPath);
-        
-        // Crea directory se non esiste
-        await fs.mkdir(dirPath, { recursive: true });
-        
-        // Scrivi il file
-        await fs.writeFile(fullPath, fileBuffer);
-        
-        storagePath = objectName;
-        fileUrl = `/api/archive/files/${objectName}`; // URL relativo per accesso via API
-        
-        console.log(`✅ File salvato localmente: ${fullPath}`);
-      } else {
-        // Upload su MinIO
-        const storageReady = await ensureArchiveBucketReady();
-        if (!storageReady) {
-          return reply.code(503).send({
-            error: 'Storage archivio non disponibile',
-            message: 'MinIO non raggiungibile. Riprova più tardi.',
-          });
-        }
-
-        await minioClient.putObject(bucketName, objectName, fileBuffer, {
-          'Content-Type': mimetype,
-        });
-
-        storagePath = objectName;
-        fileUrl = `https://${minioClient.endPoint}/${bucketName}/${objectName}`;
-        
-        console.log(`✅ File caricato su MinIO: ${fileUrl}`);
-      }
 
       // Estrai informazioni sulla cartella dal folderPath se fornito
       let folderPathValue = folderPath || '';
@@ -247,13 +275,73 @@ const archiveRoutes = async (fastify) => {
           // Se non è JSON, usa il valore derivato da folderPath
         }
       }
-      
+
       // Se il frontend invia parentFolder, usalo
       if (parentFolder) {
         parsedParentFolder = parentFolder;
       }
 
+      // Costruisci il percorso includendo la cartella
+      const folderSegment = folderPathValue ? `${folderPathValue}/` : '';
+      const objectName = `${db}/${folderSegment}${timestamp}_${sanitizedFilename}`;
+      
+      let storagePath;
+      let fileUrl;
+      
+      if (USE_LOCAL_STORAGE) {
+        console.log('[UPLOAD] 11. Salvataggio su storage locale...');
+        // Salva su filesystem locale
+        const fullPath = path.join(LOCAL_STORAGE_PATH, objectName);
+        const dirPath = path.dirname(fullPath);
+        
+        // Crea directory se non esiste
+        await fs.mkdir(dirPath, { recursive: true });
+        
+        // Scrivi il file
+        await fs.writeFile(fullPath, fileBuffer);
+        
+        storagePath = objectName;
+        fileUrl = `/api/archive/files/${objectName}`; // URL relativo per accesso via API
+        
+        console.log(`✅ File salvato localmente: ${fullPath}`);
+      } else {
+        console.log('[UPLOAD] 11b. Salvataggio su MinIO...');
+        // Upload su MinIO
+        const storageReady = await ensureArchiveBucketReady();
+        if (!storageReady) {
+          return reply.code(503).send({
+            error: 'Storage archivio non disponibile',
+            message: 'MinIO non raggiungibile. Riprova più tardi.',
+          });
+        }
+
+        await minioClient.putObject(bucketName, objectName, fileBuffer, {
+          'Content-Type': mimetype,
+        });
+
+        storagePath = objectName;
+        fileUrl = `${getMinioBaseUrl()}/${bucketName}/${objectName}`;
+        
+        console.log(`✅ File caricato su MinIO: ${fileUrl}`);
+      }
+
+      console.log('[UPLOAD] 12. Preparazione metadati documento...');
+
       // 3. Crea record documento nel database
+      console.log('[UPLOAD] 13. Creazione record documento nel DB...');
+      console.log('[UPLOAD] 13a. Dati documento:', {
+        db,
+        originalFilename: filename,
+        fileSize,
+        mimeType: mimetype,
+        fileHash: fileHash.substring(0, 16) + '...',
+        storagePath,
+        storageBucket: bucketName,
+        folderPath: folderPathValue,
+        folderPathArray: parsedFolderPathArray,
+        parentFolder: parsedParentFolder,
+        title: title || filename,
+      });
       let document;
       try {
         document = await documentRepo.create({
@@ -276,36 +364,86 @@ const archiveRoutes = async (fastify) => {
           priority: priority || 'NORMAL',
           createdBy: request.user?.username, // Assumendo autenticazione JWT
         });
+        console.log('[UPLOAD] 13b. ✅ Documento creato con ID:', document.id);
       } catch (dbError) {
-        // Gestisci errore di chiave duplicata
-        if (dbError.code === '23505' && dbError.constraint === 'archive_documents_file_hash_key') {
-          return reply.code(409).send({
-            error: 'Documento duplicato',
-            message: 'Un documento identico è già presente nell\'archivio (hash duplicato)',
-          });
+        console.error('[UPLOAD] 13c. ❌ ERRORE DB:', dbError.message, dbError.code, dbError.constraint);
+
+        // Se c'è un errore di duplicato, cancella il file appena salvato
+        if (dbError.code === '23505') {
+          console.log('[UPLOAD] 13d. Cancellazione file duplicato...');
+          try {
+            if (USE_LOCAL_STORAGE) {
+              const fullPath = path.join(LOCAL_STORAGE_PATH, objectName);
+              await fs.unlink(fullPath);
+              console.log(`[UPLOAD] 13e. ✅ File cancellato: ${fullPath}`);
+            }
+            // Per MinIO non cancelliamo perché non siamo arrivati a quel punto
+          } catch (cleanupErr) {
+            console.error('[UPLOAD] 13f. ⚠️ Errore cancellazione file:', cleanupErr.message);
+          }
+
+          if (dbError.constraint === 'archive_documents_file_hash_key') {
+            return reply.code(409).send({
+              error: 'Documento duplicato',
+              message: 'Un documento identico è già presente nell\'archivio (hash duplicato)',
+            });
+          }
         }
         throw dbError; // Rilancia altri errori
       }
 
+      console.log('[UPLOAD] 14. Documento creato:', document.id);
+
       // 4. Avvia pipeline di processamento tramite pg-boss
+      console.log('[UPLOAD] 15. Accodamento job OCR...');
+      console.log('[UPLOAD] 15a. pg-boss stato:', boss ? 'initialized' : 'null');
+      console.log('[UPLOAD] 15b. Document ID:', document.id);
+      console.log('[UPLOAD] 15c. DB:', db);
+      let jobId = null;
       try {
-        // Accoda job OCR
-        await boss.send('archive-ocr', {
+        // Verifica che il queue esista
+        await boss.createQueue('archive-ocr');
+        console.log('[UPLOAD] 15d. Queue archive-ocr verificata');
+
+        jobId = await boss.send('archive-ocr', {
           documentId: document.id,
           db: db,
         }, {
           priority: document.priority === 'URGENT' ? 100 : 50,
+          retryLimit: 3,
+          retryDelay: 30,
+          expireInMinutes: 60,
         });
-        console.log(`✅ Job OCR accodato per documento ${document.id}`);
+        console.log(`[UPLOAD] 16. ✅ Job OCR accodato per documento ${document.id}, jobId: ${jobId}`);
+
+        if (!jobId) {
+          console.error('[UPLOAD] ⚠️ Job ID è null, possibile problema con pg-boss');
+        }
 
         // Aggiorna stato documento
-        await documentRepo.updateProcessingStatus(document.id, 'pending');
+        console.log('[UPLOAD] 17. Aggiornamento stato documento...');
+        await documentRepo.updateProcessingStatus(document.id, jobId ? 'pending' : 'failed');
+        console.log('[UPLOAD] 18. ✅ Stato aggiornato a', jobId ? 'pending' : 'failed');
       } catch (queueError) {
-        console.error('❌ Errore accodamento job:', queueError);
+        console.error('[UPLOAD] ❌ Errore accodamento job:', queueError);
+        console.error('[UPLOAD] Stack:', queueError.stack);
         // Non bloccare l'upload se l'accodamento fallisce
+        try {
+          await documentRepo.updateProcessingStatus(document.id, 'failed');
+        } catch (e) {
+          console.error('[UPLOAD] ❌ Errore aggiornamento stato:', e);
+        }
       } finally {
-        await boss.stop();
+        console.log('[UPLOAD] 19. Chiusura pg-boss...');
+        try {
+          await boss.stop();
+          console.log('[UPLOAD] 20. ✅ pg-boss chiuso');
+        } catch (stopError) {
+          console.error('[UPLOAD] ⚠️ Errore chiusura pg-boss:', stopError.message);
+        }
       }
+
+      console.log('[UPLOAD] 21. Preparazione risposta...');
 
       // 5. Controllo deduplicazione fuzzy in background (opzionale - richiede embeddings)
       // TODO: Abilitare quando Qdrant/Ollama saranno configurati
@@ -320,6 +458,7 @@ const archiveRoutes = async (fastify) => {
       //   console.error('Errore controllo duplicati fuzzy:', err);
       // });
 
+      console.log('[UPLOAD] 22. ✅ Risposta inviata');
       return reply.code(201).send({
         success: true,
         message: 'Documento caricato con successo',
@@ -336,9 +475,200 @@ const archiveRoutes = async (fastify) => {
         },
       });
     } catch (error) {
-      console.error('Errore upload documento:', error);
+      console.error('[UPLOAD] ❌ ERRORE:', error);
+      console.error('[UPLOAD] Stack:', error.stack);
+      // Cleanup pg-boss if initialized
+      if (boss) {
+        try {
+          await boss.stop();
+        } catch (bossErr) {
+          console.error('[UPLOAD] Errore chiusura pg-boss:', bossErr);
+        }
+      }
       return reply.code(500).send({
         error: 'Errore durante il caricamento del documento',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /archive/folders
+   * Crea una nuova cartella
+   */
+  fastify.post('/folders', async (request, reply) => {
+    try {
+      const { db, folderName, parentPath = '' } = request.body;
+
+      if (!db || !folderName) {
+        return reply.code(400).send({ error: 'Parametri "db" e "folderName" obbligatori' });
+      }
+
+      // Sanitizza il nome cartella
+      const sanitizedFolderName = folderName.replace(/[^a-zA-Z0-9-_]/g, '_');
+      const fullPath = parentPath ? `${parentPath}/${sanitizedFolderName}` : sanitizedFolderName;
+
+      // Crea la directory fisica
+      const dirPath = path.join(LOCAL_STORAGE_PATH, db, fullPath);
+      await fs.mkdir(dirPath, { recursive: true });
+
+      console.log(`[FOLDER] ✅ Cartella creata: ${fullPath}`);
+
+      return reply.code(201).send({
+        success: true,
+        message: 'Cartella creata con successo',
+        folder: {
+          name: sanitizedFolderName,
+          path: fullPath,
+          parentPath,
+        },
+      });
+    } catch (error) {
+      console.error('[FOLDER] ❌ Errore creazione cartella:', error);
+      return reply.code(500).send({
+        error: 'Errore durante la creazione della cartella',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * PUT /archive/folders
+   * Rinomina una cartella
+   */
+  fastify.put('/folders', async (request, reply) => {
+    try {
+      const { db, oldPath, newName } = request.body;
+
+      if (!db || !oldPath || !newName) {
+        return reply.code(400).send({ error: 'Parametri "db", "oldPath" e "newName" obbligatori' });
+      }
+
+      // Sanitizza il nuovo nome
+      const sanitizedNewName = newName.replace(/[^a-zA-Z0-9-_]/g, '_');
+
+      // Calcola i percorsi
+      const parentPath = path.dirname(oldPath);
+      const newPath = parentPath === '.' ? sanitizedNewName : `${parentPath}/${sanitizedNewName}`;
+
+      const oldFullPath = path.join(LOCAL_STORAGE_PATH, db, oldPath);
+      const newFullPath = path.join(LOCAL_STORAGE_PATH, db, newPath);
+
+      // Rinomina la directory
+      await fs.rename(oldFullPath, newFullPath);
+
+      // Aggiorna i documenti nel DB che hanno questo percorso
+      const documentRepo = new DocumentRepository(fastify.pg);
+      await documentRepo.updateFolderPath(db, oldPath, newPath);
+
+      console.log(`[FOLDER] ✅ Cartella rinominata: ${oldPath} -> ${newPath}`);
+
+      return reply.code(200).send({
+        success: true,
+        message: 'Cartella rinominata con successo',
+        folder: {
+          oldPath,
+          newPath,
+          newName: sanitizedNewName,
+        },
+      });
+    } catch (error) {
+      console.error('[FOLDER] ❌ Errore rinomina cartella:', error);
+      return reply.code(500).send({
+        error: 'Errore durante la rinominazione della cartella',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * DELETE /archive/folders
+   * Elimina una cartella (solo se vuota)
+   */
+  fastify.delete('/folders', async (request, reply) => {
+    try {
+      const { db, folderPath } = request.query;
+
+      if (!db || !folderPath) {
+        return reply.code(400).send({ error: 'Parametri "db" e "folderPath" obbligatori' });
+      }
+
+      const fullPath = path.join(LOCAL_STORAGE_PATH, db, folderPath);
+
+      // Verifica se la cartella esiste
+      try {
+        await fs.access(fullPath);
+      } catch {
+        return reply.code(404).send({ error: 'Cartella non trovata' });
+      }
+
+      // Verifica se ci sono documenti nel DB in questa cartella
+      const documentRepo = new DocumentRepository(fastify.pg);
+      const documentsInFolder = await documentRepo.countByFolder(db, folderPath);
+
+      if (documentsInFolder > 0) {
+        return reply.code(409).send({
+          error: 'Cartella non vuota',
+          message: `La cartella contiene ${documentsInFolder} documenti. Sposta o elimina i documenti prima di eliminare la cartella.`,
+        });
+      }
+
+      // Elimina la cartella
+      await fs.rmdir(fullPath);
+
+      console.log(`[FOLDER] ✅ Cartella eliminata: ${folderPath}`);
+
+      return reply.code(200).send({
+        success: true,
+        message: 'Cartella eliminata con successo',
+      });
+    } catch (error) {
+      console.error('[FOLDER] ❌ Errore eliminazione cartella:', error);
+      return reply.code(500).send({
+        error: 'Errore durante l\'eliminazione della cartella',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * GET /archive/folders
+   * Lista cartelle
+   */
+  fastify.get('/folders', async (request, reply) => {
+    try {
+      const { db, parentPath = '' } = request.query;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      const basePath = path.join(LOCAL_STORAGE_PATH, db, parentPath);
+
+      // Leggi le cartelle
+      let folders = [];
+      try {
+        const entries = await fs.readdir(basePath, { withFileTypes: true });
+        folders = entries
+          .filter(entry => entry.isDirectory())
+          .map(entry => ({
+            name: entry.name,
+            path: parentPath ? `${parentPath}/${entry.name}` : entry.name,
+            parentPath,
+          }));
+      } catch {
+        // Se la cartella non esiste, restituisci array vuoto
+        folders = [];
+      }
+
+      return reply.code(200).send({
+        success: true,
+        folders,
+      });
+    } catch (error) {
+      console.error('[FOLDER] ❌ Errore lista cartelle:', error);
+      return reply.code(500).send({
+        error: 'Errore durante il recupero delle cartelle',
         message: error.message,
       });
     }
@@ -350,7 +680,7 @@ const archiveRoutes = async (fastify) => {
    */
   fastify.get('/documents', async (request, reply) => {
     try {
-      const { db, status, priority, documentType, limit = 50, offset = 0 } = request.query;
+      const { db, status, priority, documentType, folderPath, limit = 50, offset = 0 } = request.query;
 
       if (!db) {
         return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
@@ -362,6 +692,7 @@ const archiveRoutes = async (fastify) => {
         status,
         priority,
         documentType,
+        folderPath,
         limit: parseInt(limit),
         offset: parseInt(offset),
       });
@@ -369,6 +700,7 @@ const archiveRoutes = async (fastify) => {
       const total = await documentRepo.countByDatabase(db, {
         status,
         documentType,
+        folderPath,
       });
 
       return reply.send({
@@ -430,7 +762,7 @@ const archiveRoutes = async (fastify) => {
 
   /**
    * POST /archive/search
-   * Ricerca ibrida (full-text + semantic)
+   * Ricerca full-text semplice
    */
   fastify.post('/search', async (request, reply) => {
     try {
@@ -440,27 +772,101 @@ const archiveRoutes = async (fastify) => {
         return reply.code(400).send({ error: 'Parametri "db" e "query" obbligatori' });
       }
 
-      const hybridSearchService = new HybridSearchService(
-        fastify.pg,
-        process.env.QDRANT_URL || 'http://localhost:6333'
-      );
+      const documentRepo = new DocumentRepository(fastify.pg);
 
-      const results = await hybridSearchService.search(db, query, {
-        filters,
-        limit,
-        offset,
-        rrfK: 60, // Parametro RRF
-      });
+      // Ricerca per parole chiave (OR tra tutte le parole)
+      const keywords = query.trim().split(/\s+/).filter(k => k.length > 2);
+
+      let sqlQuery;
+      let params;
+      let countQuery;
+      let countParams;
+
+      if (keywords.length === 0) {
+        // Ricerca semplice se non ci sono parole valide
+        const searchTerm = `%${query}%`;
+        sqlQuery = `
+          SELECT *
+          FROM archive_documents
+          WHERE db = $1
+            AND deleted_at IS NULL
+            AND (
+              original_filename ILIKE $2
+              OR title ILIKE $2
+              OR COALESCE(extracted_text, '') ILIKE $2
+            )
+          ORDER BY created_at DESC
+          LIMIT $3 OFFSET $4
+        `;
+        params = [db, searchTerm, limit, offset];
+        countQuery = `SELECT COUNT(*) FROM archive_documents
+           WHERE db = $1
+             AND deleted_at IS NULL
+             AND (original_filename ILIKE $2 OR title ILIKE $2 OR COALESCE(extracted_text, '') ILIKE $2)`;
+        countParams = [db, searchTerm];
+      } else {
+        // Ricerca con OR tra parole chiave
+        const conditions = keywords.map((_, i) => `
+            original_filename ILIKE $${i + 2}
+            OR title ILIKE $${i + 2}
+            OR COALESCE(extracted_text, '') ILIKE $${i + 2}
+        `).join(' OR ');
+
+        sqlQuery = `
+          SELECT *
+          FROM archive_documents
+          WHERE db = $1
+            AND deleted_at IS NULL
+            AND (${conditions})
+          ORDER BY created_at DESC
+          LIMIT $${keywords.length + 2} OFFSET $${keywords.length + 3}
+        `;
+        params = [db, ...keywords.map(k => `%${k}%`), limit, offset];
+
+        const countConditions = keywords.map((_, i) => `
+            original_filename ILIKE $${i + 2}
+            OR title ILIKE $${i + 2}
+            OR COALESCE(extracted_text, '') ILIKE $${i + 2}
+        `).join(' OR ');
+        countQuery = `SELECT COUNT(*) FROM archive_documents
+           WHERE db = $1
+             AND deleted_at IS NULL
+             AND (${countConditions})`;
+        countParams = [db, ...keywords.map(k => `%${k}%`)];
+      }
+
+      const result = await fastify.pg.query(sqlQuery, params);
+      const countResult = await fastify.pg.query(countQuery, countParams);
 
       return reply.send({
         success: true,
         query,
-        results: results.results,
-        metrics: results.metrics,
+        results: result.rows.map(doc => ({
+          document_id: doc.id,
+          id: doc.id,
+          original_filename: doc.original_filename,
+          title: doc.title,
+          file_size: doc.file_size,
+          mime_type: doc.mime_type,
+          processing_status: doc.processing_status,
+          priority: doc.priority,
+          created_at: doc.created_at,
+          folder_path: doc.folder_path,
+          relevance_score: 1.0,
+          match_type: 'fulltext',
+          highlight: doc.extracted_text ? doc.extracted_text.substring(0, 500) : null,
+          extracted_text: doc.extracted_text,
+        })),
+        metrics: {
+          total_results: parseInt(countResult.rows[0].count),
+          fulltext_count: result.rows.length,
+          semantic_count: 0,
+          search_time_ms: 0,
+        },
         pagination: {
           limit,
           offset,
-          total: results.results.length,
+          total: parseInt(countResult.rows[0].count),
         },
       });
     } catch (error) {
@@ -474,7 +880,7 @@ const archiveRoutes = async (fastify) => {
 
   /**
    * DELETE /archive/documents/:id
-   * Soft delete documento
+   * Soft delete documento + eliminazione file da storage
    */
   fastify.delete('/documents/:id', async (request, reply) => {
     try {
@@ -485,6 +891,28 @@ const archiveRoutes = async (fastify) => {
 
       if (!document) {
         return reply.code(404).send({ error: 'Documento non trovato' });
+      }
+
+      // Elimina il file fisico dallo storage
+      if (!USE_LOCAL_STORAGE && minioClient && document.storage_path) {
+        try {
+          const storageReady = await ensureArchiveBucketReady();
+          if (storageReady) {
+            await minioClient.removeObject(bucketName, document.storage_path);
+            console.log(`[DELETE] File eliminato da MinIO: ${document.storage_path}`);
+          }
+        } catch (minioErr) {
+          console.error('[DELETE] Errore eliminazione file da MinIO:', minioErr.message);
+          // Non blocchiamo l'eliminazione del documento se il file non esiste già
+        }
+      } else if (USE_LOCAL_STORAGE && document.storage_path) {
+        try {
+          const fullPath = path.join(LOCAL_STORAGE_PATH, document.storage_path);
+          await fs.unlink(fullPath);
+          console.log(`[DELETE] File eliminato da local storage: ${fullPath}`);
+        } catch (fsErr) {
+          console.error('[DELETE] Errore eliminazione file locale:', fsErr.message);
+        }
       }
 
       await documentRepo.softDelete(id, request.user?.username);
@@ -503,75 +931,269 @@ const archiveRoutes = async (fastify) => {
   });
 
   /**
-   * GET /archive/folders
-   * Lista cartelle e file in un percorso specifico (Finder-like navigation)
+   * PUT /archive/documents/rename
+   * Rinomina un file (solo il nome, non sposta)
    */
-  fastify.get('/folders', async (request, reply) => {
+  fastify.put('/documents/rename', async (request, reply) => {
     try {
-      const { db, path = '' } = request.query;
+      const { db, documentId, newName } = request.body;
+
+      if (!db || !documentId || !newName) {
+        return reply.code(400).send({ error: 'Parametri "db", "documentId" e "newName" obbligatori' });
+      }
+
+      const documentRepo = new DocumentRepository(fastify.pg);
+      const document = await documentRepo.findById(documentId);
+
+      if (!document || document.db !== db) {
+        return reply.code(404).send({ error: 'Documento non trovato' });
+      }
+
+      // Aggiorna solo il titolo/original_filename
+      await documentRepo.update(documentId, {
+        title: newName,
+        original_filename: newName,
+      });
+
+      console.log(`[FILE] ✅ File rinominato: ${documentId} -> ${newName}`);
+
+      return reply.send({
+        success: true,
+        message: 'File rinominato con successo',
+      });
+    } catch (error) {
+      console.error('[FILE] ❌ Errore rinomina file:', error);
+      return reply.code(500).send({
+        error: 'Errore durante la rinominazione del file',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * PUT /archive/documents/move
+   * Sposta un file in un'altra cartella
+   */
+  fastify.put('/documents/move', async (request, reply) => {
+    try {
+      const { db, documentId, targetFolder } = request.body;
+
+      if (!db || !documentId) {
+        return reply.code(400).send({ error: 'Parametri "db" e "documentId" obbligatori' });
+      }
+
+      const documentRepo = new DocumentRepository(fastify.pg);
+      const document = await documentRepo.findById(documentId);
+
+      if (!document || document.db !== db) {
+        return reply.code(404).send({ error: 'Documento non trovato' });
+      }
+
+      // Calcola nuovo percorso
+      const newFolderPath = targetFolder || '';
+      const newFolderPathArray = newFolderPath ? newFolderPath.split('/').filter(Boolean) : [];
+      const newParentFolder = newFolderPathArray.length > 0 ? newFolderPathArray[newFolderPathArray.length - 1] : null;
+
+      // Sposta fisicamente il file se storage locale
+      if (USE_LOCAL_STORAGE && document.storage_path) {
+        const oldFullPath = path.join(LOCAL_STORAGE_PATH, document.storage_path);
+        const filename = path.basename(document.storage_path);
+        const newObjectName = `${db}/${newFolderPath ? `${newFolderPath}/` : ''}${Date.now()}_${filename}`;
+        const newFullPath = path.join(LOCAL_STORAGE_PATH, newObjectName);
+
+        try {
+          // Crea directory se non esiste
+          await fs.mkdir(path.dirname(newFullPath), { recursive: true });
+          // Sposta il file
+          await fs.rename(oldFullPath, newFullPath);
+          // Aggiorna storage_path
+          await documentRepo.update(documentId, {
+            storage_path: newObjectName,
+          });
+          console.log(`[FILE] ✅ File spostato: ${oldFullPath} -> ${newFullPath}`);
+        } catch (err) {
+          console.error('[FILE] ❌ Errore spostamento file fisico:', err);
+          // Continua comunque per aggiornare il DB
+        }
+      }
+
+      // Aggiorna metadati nel DB
+      await documentRepo.update(documentId, {
+        folder_path: newFolderPath,
+        folder_path_array: newFolderPathArray,
+        parent_folder: newParentFolder,
+      });
+
+      console.log(`[FILE] ✅ File spostato nel DB: ${documentId} -> ${targetFolder || 'root'}`);
+
+      return reply.send({
+        success: true,
+        message: 'File spostato con successo',
+      });
+    } catch (error) {
+      console.error('[FILE] ❌ Errore spostamento file:', error);
+      return reply.code(500).send({
+        error: 'Errore durante lo spostamento del file',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * GET /archive/documents/:id/download
+   * Download di un file
+   */
+  fastify.get('/documents/:id/download', async (request, reply) => {
+    try {
+      const { id } = request.params;
+      const { db } = request.query;
 
       if (!db) {
         return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
       }
 
-      const client = await fastify.pg.connect();
+      const documentRepo = new DocumentRepository(fastify.pg);
+      const document = await documentRepo.findById(id);
 
-      try {
-        // Ottieni sottocartelle dirette
-        const foldersQuery = `
-          SELECT * FROM archive_folders
-          WHERE db = $1 AND parent_path = $2
-          ORDER BY folder_name
-        `;
-        const foldersResult = await client.query(foldersQuery, [db, path]);
+      if (!document || document.db !== db) {
+        return reply.code(404).send({ error: 'Documento non trovato' });
+      }
 
-        // Ottieni file nel percorso corrente
-        const filesQuery = `
-          SELECT 
-            id,
-            original_filename,
-            file_size,
-            mime_type,
-            storage_path,
-            folder_path,
-            parent_folder,
-            tags,
-            document_type,
-            document_subtype,
-            processing_status,
-            created_at,
-            updated_at
-          FROM archive_documents
-          WHERE db = $1 
-            AND folder_path = $2
-            AND deleted_at IS NULL
-          ORDER BY original_filename
-        `;
-        const filesResult = await client.query(filesQuery, [db, path]);
-        
-        // Aggiungi URL ai file
-        const filesWithUrls = filesResult.rows.map(file => ({
-          ...file,
-          url: USE_LOCAL_STORAGE 
-            ? `/api/archive/files/${file.storage_path}` 
-            : `https://${minioClient?.endPoint}/${bucketName}/${file.storage_path}`,
-        }));
+      if (USE_LOCAL_STORAGE) {
+        const filePath = path.join(LOCAL_STORAGE_PATH, document.storage_path);
 
-        return reply.send({
-          success: true,
-          currentPath: path,
-          folders: foldersResult.rows,
-          files: filesWithUrls,
-        });
-      } finally {
-        client.release();
+        // Verifica che il file esista
+        try {
+          await fs.access(filePath);
+        } catch {
+          return reply.code(404).send({ error: 'File non trovato sul disco' });
+        }
+
+        // Determina mime type
+        const ext = path.extname(document.original_filename).toLowerCase();
+        const mimeTypes = {
+          '.pdf': 'application/pdf',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.png': 'image/png',
+          '.gif': 'image/gif',
+          '.doc': 'application/msword',
+          '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          '.xls': 'application/vnd.ms-excel',
+          '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          '.txt': 'text/plain',
+          '.zip': 'application/zip',
+        };
+        const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+        reply.header('Content-Type', mimeType);
+        reply.header('Content-Disposition', `attachment; filename="${document.original_filename}"`);
+
+        const fileStream = await fs.readFile(filePath);
+        return reply.send(fileStream);
+      } else {
+        // Per MinIO, genera URL presigned
+        const storageReady = await ensureArchiveBucketReady();
+        if (!storageReady) {
+          return reply.code(503).send({ error: 'Storage non disponibile' });
+        }
+
+        const presignedUrl = await minioClient.presignedGetObject(bucketName, document.storage_path, 60 * 60); // 1 ora
+        return reply.send({ downloadUrl: presignedUrl });
       }
     } catch (error) {
-      console.error('Errore recupero cartelle:', error);
+      console.error('[FILE] ❌ Errore download file:', error);
       return reply.code(500).send({
-        error: 'Errore durante il recupero delle cartelle',
+        error: 'Errore durante il download del file',
         message: error.message,
       });
+    }
+  });
+
+  /**
+   * POST /archive/documents/:id/retry
+   * Riprova il processamento di un documento fallito
+   */
+  fastify.post('/documents/:id/retry', async (request, reply) => {
+    let boss = null;
+    try {
+      const { id } = request.params;
+      const { db } = request.body;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      const documentRepo = new DocumentRepository(fastify.pg);
+      const document = await documentRepo.findById(id);
+
+      if (!document || document.db !== db) {
+        return reply.code(404).send({ error: 'Documento non trovato' });
+      }
+
+      // Solo documenti in stato 'failed' o 'pending' possono essere ritentati
+      const retryableStatuses = ['failed', 'pending', 'ocr_completed', 'metadata_completed', 'cleaning_completed'];
+      if (!retryableStatuses.includes(document.processing_status)) {
+        return reply.code(409).send({
+          error: 'Stato non valido',
+          message: `Impossibile ritentare: lo stato attuale è "${document.processing_status}". Solo documenti falliti o in attesa possono essere ritentati.`,
+          currentStatus: document.processing_status,
+        });
+      }
+
+      // Resetta il documento per il nuovo tentativo
+      await documentRepo.resetForRetry(id);
+
+      // Inizializza pg-boss e accoda un nuovo job OCR
+      boss = new PgBoss({
+        connectionString: process.env.POSTGRES_URL,
+        retryLimit: 3,
+        retryDelay: 30,
+        retryBackoff: true,
+        expireInMinutes: 60,
+      });
+      await boss.start();
+
+      // Verifica che il queue esista
+      await boss.createQueue('archive-ocr');
+
+      // Accoda nuovo job OCR
+      const jobId = await boss.send('archive-ocr', {
+        documentId: document.id,
+        db: db,
+      }, {
+        priority: document.priority === 'URGENT' ? 100 : 50,
+        retryLimit: 3,
+        retryDelay: 30,
+        expireInMinutes: 60,
+      });
+
+      console.log(`[RETRY] Documento ${id} resettato e job OCR accodato: ${jobId}`);
+
+      return reply.send({
+        success: true,
+        message: 'Documento rimesso in coda per il processamento',
+        jobId,
+        document: {
+          id: document.id,
+          status: 'pending',
+          originalStatus: document.processing_status,
+        },
+      });
+    } catch (error) {
+      console.error('[RETRY] Errore:', error);
+      return reply.code(500).send({
+        error: 'Errore durante il retry del documento',
+        message: error.message,
+      });
+    } finally {
+      if (boss) {
+        try {
+          await boss.stop();
+        } catch (e) {
+          console.error('[RETRY] Errore chiusura pg-boss:', e.message);
+        }
+      }
     }
   });
 
@@ -669,7 +1291,7 @@ const archiveRoutes = async (fastify) => {
       try {
         const filePath = request.params['*']; // Es: "studio_cantini/123456_file.pdf"
         const fullPath = path.join(LOCAL_STORAGE_PATH, filePath);
-        
+
         // Verifica che il file esista
         try {
           await fs.access(fullPath);
@@ -679,7 +1301,7 @@ const archiveRoutes = async (fastify) => {
             message: 'Il file richiesto non esiste',
           });
         }
-        
+
         // Determina il mime type dal nome file
         const ext = path.extname(filePath).toLowerCase();
         const mimeTypes = {
@@ -695,16 +1317,16 @@ const archiveRoutes = async (fastify) => {
           '.txt': 'text/plain',
           '.zip': 'application/zip',
         };
-        
+
         const mimeType = mimeTypes[ext] || 'application/octet-stream';
-        
+
         // Invia il file
         reply.header('Content-Type', mimeType);
         reply.header('Content-Disposition', `inline; filename="${path.basename(filePath)}"`);
-        
+
         const fileStream = await fs.readFile(fullPath);
         return reply.send(fileStream);
-        
+
       } catch (error) {
         console.error('Errore serving file:', error);
         return reply.code(500).send({
@@ -714,6 +1336,451 @@ const archiveRoutes = async (fastify) => {
       }
     });
   }
+
+  /**
+   * POST /archive/ask
+   * Interroga l'LLM con contesto dai documenti
+   */
+  fastify.post('/ask', async (request, reply) => {
+    try {
+      const { prompt, model = 'mistral-nemo' } = request.body;
+
+      if (!prompt) {
+        return reply.code(400).send({ error: 'Parametro "prompt" obbligatorio' });
+      }
+
+      const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+
+      console.log('[ASK] Chiamata Ollama:', { model, promptLength: prompt.length });
+
+      const response = await fetch(`${ollamaUrl}/api/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          prompt,
+          stream: false,
+          options: {
+            temperature: 0.3,
+            num_predict: 500,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('[ASK] Errore Ollama:', response.status, errorText);
+        return reply.code(503).send({
+          error: 'Errore durante la generazione della risposta',
+          message: `Ollama error: ${response.status}`,
+        });
+      }
+
+      const result = await response.json();
+
+      return reply.send({
+        success: true,
+        response: result.response,
+        model,
+        done: result.done,
+      });
+    } catch (error) {
+      console.error('[ASK] Errore:', error);
+      return reply.code(500).send({
+        error: 'Errore durante la generazione della risposta',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * DELETE /archive/documents/clear-all
+   * Elimina TUTTI i documenti dall'archivio (operazione distruttiva)
+   * Richiede parametro confirm='DELETE_ALL' per sicurezza
+   */
+  fastify.delete('/documents/clear-all', async (request, reply) => {
+    try {
+      const { db, confirm } = request.body;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      // Sicurezza: richiede conferma esplicita
+      if (confirm !== 'DELETE_ALL') {
+        return reply.code(403).send({
+          error: 'Conferma richiesta',
+          message: 'Per eliminare tutti i documenti, includi nel body: { confirm: "DELETE_ALL" }',
+        });
+      }
+
+      const documentRepo = new DocumentRepository(fastify.pg);
+
+      // Conta documenti prima della cancellazione
+      const countBefore = await documentRepo.countByDatabase(db);
+
+      if (countBefore === 0) {
+        return reply.send({
+          success: true,
+          message: 'Nessun documento da eliminare',
+          deletedCount: 0,
+        });
+      }
+
+      // Cancella file fisici da MinIO/storage locale
+      const docs = await documentRepo.findByDatabase(db, { limit: 10000 });
+      let deletedFiles = 0;
+      let deletedFilesErrors = [];
+
+      for (const doc of docs) {
+        if (!doc.storage_path) continue;
+
+        try {
+          if (!USE_LOCAL_STORAGE && minioClient) {
+            const storageReady = await ensureArchiveBucketReady();
+            if (storageReady) {
+              await minioClient.removeObject(bucketName, doc.storage_path);
+              deletedFiles++;
+            }
+          } else if (USE_LOCAL_STORAGE) {
+            const fullPath = path.join(LOCAL_STORAGE_PATH, doc.storage_path);
+            await fs.unlink(fullPath);
+            deletedFiles++;
+          }
+        } catch (fileErr) {
+          console.error(`[CLEAR-ALL] Errore eliminazione file ${doc.storage_path}:`, fileErr.message);
+          deletedFilesErrors.push({ file: doc.storage_path, error: fileErr.message });
+        }
+      }
+
+      // Cancella jobs da pg-boss
+      let boss = null;
+      let deletedJobs = 0;
+      try {
+        boss = new PgBoss({
+          connectionString: process.env.POSTGRES_URL,
+        });
+        await boss.start();
+        // Cancella tutti i jobs archive-*
+        const deleted = await boss.getDb().executeSql(
+          "DELETE FROM pgboss.job WHERE name LIKE 'archive-%' RETURNING id"
+        );
+        deletedJobs = deleted?.rows?.length || 0;
+      } catch (bossErr) {
+        console.error('[CLEAR-ALL] Errore cancellazione jobs pg-boss:', bossErr.message);
+      } finally {
+        if (boss) {
+          try { await boss.stop(); } catch (e) { /* ignore */ }
+        }
+      }
+
+      // TRUNCATE della tabella (cascata su chunks e processing_jobs)
+      await fastify.pg.query('TRUNCATE TABLE archive_documents CASCADE');
+
+      console.log(`[CLEAR-ALL] Eliminati ${countBefore} documenti, ${deletedFiles} file fisici, ${deletedJobs} jobs`);
+
+      return reply.send({
+        success: true,
+        message: `Eliminati ${countBefore} documenti dall'archivio`,
+        deletedCount: countBefore,
+        deletedFiles,
+        deletedJobs,
+        errors: deletedFilesErrors.length > 0 ? deletedFilesErrors : undefined,
+      });
+
+    } catch (error) {
+      console.error('[CLEAR-ALL] Errore:', error);
+      return reply.code(500).send({
+        error: 'Errore durante la cancellazione dei documenti',
+        message: error.message,
+      });
+    }
+  });
+
+  // =============================================================================
+  // CHAT CONVERSAZIONALE - Endpoints per assistente documentale
+  // =============================================================================
+
+  const chatRepo = new ChatRepository(fastify.pg);
+  const qdrantClient = new QdrantClient({
+    url: process.env.QDRANT_URL || 'http://localhost:6333',
+  });
+
+  /**
+   * POST /archive/chat/sessions
+   * Crea una nuova sessione di chat
+   */
+  fastify.post('/chat/sessions', async (request, reply) => {
+    try {
+      const { db, title } = request.body;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      const session = await chatRepo.createSession(db, null, title);
+      console.log(`[CHAT] Nuova sessione creata: ${session.id}`);
+
+      return reply.send({
+        success: true,
+        session: {
+          id: session.id,
+          title: session.title,
+          created_at: session.created_at,
+        },
+      });
+    } catch (error) {
+      console.error('[CHAT] Errore creazione sessione:', error);
+      return reply.code(500).send({
+        error: 'Errore durante la creazione della sessione',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * GET /archive/chat/sessions
+   * Lista sessioni di chat per database
+   */
+  fastify.get('/chat/sessions', async (request, reply) => {
+    try {
+      const { db } = request.query;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      const sessions = await chatRepo.listSessions(db);
+
+      return reply.send({
+        success: true,
+        sessions: sessions.map(s => ({
+          id: s.id,
+          title: s.title,
+          created_at: s.created_at,
+          last_message_at: s.last_message_at,
+          last_message_preview: s.last_message_preview,
+        })),
+      });
+    } catch (error) {
+      console.error('[CHAT] Errore recupero sessioni:', error);
+      return reply.code(500).send({
+        error: 'Errore durante il recupero delle sessioni',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * GET /archive/chat/sessions/:id/messages
+   * Recupera messaggi di una sessione
+   */
+  fastify.get('/chat/sessions/:id/messages', async (request, reply) => {
+    try {
+      const { id } = request.params;
+      const { db } = request.query;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      const session = await chatRepo.findSessionById(id);
+      if (!session || session.db !== db) {
+        return reply.code(404).send({ error: 'Sessione non trovata' });
+      }
+
+      const messages = await chatRepo.getSessionHistory(id, 100);
+
+      return reply.send({
+        success: true,
+        session: {
+          id: session.id,
+          title: session.title,
+          created_at: session.created_at,
+        },
+        messages: messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          sources: m.sources,
+          created_at: m.created_at,
+        })),
+      });
+    } catch (error) {
+      console.error('[CHAT] Errore recupero messaggi:', error);
+      return reply.code(500).send({
+        error: 'Errore durante il recupero dei messaggi',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * POST /archive/chat/sessions/:id/messages
+   * Invia un messaggio e riceve risposta con contesto conversazionale
+   */
+  fastify.post('/chat/sessions/:id/messages', async (request, reply) => {
+    const startTime = Date.now();
+    try {
+      const { id: sessionId } = request.params;
+      const { db, message } = request.body;
+
+      if (!db || !message) {
+        return reply.code(400).send({
+          error: 'Parametri obbligatori: db, message'
+        });
+      }
+
+      const session = await chatRepo.findSessionById(sessionId);
+      if (!session || session.db !== db) {
+        return reply.code(404).send({ error: 'Sessione non trovata' });
+      }
+
+      // 1. Salva messaggio utente
+      await chatRepo.saveMessage(sessionId, 'user', message);
+
+      // 2. Recupera storico conversazione (ultimi 6 messaggi = 3 scambi)
+      const recentMessages = await chatRepo.getRecentMessages(sessionId, 6);
+
+      // 3. Ricerca vettoriale nel contesto della conversazione
+      const hybridSearch = new HybridSearchService(fastify.pg, qdrantClient);
+      const searchResults = await hybridSearch.search({
+        db,
+        query: message,
+        semanticWeight: 0.7,
+        keywordWeight: 0.3,
+        limit: 5,
+      });
+
+      // 4. Costruisci contesto per LLM
+      const contextChunks = searchResults.results.map(r => ({
+        text: r.chunk_text,
+        document: r.original_filename,
+        score: r.final_score,
+      }));
+
+      // 5. Costruisci prompt con memoria conversazionale
+      const conversationHistory = recentMessages
+        .filter(m => m.role !== 'system')
+        .map(m => ({ role: m.role, content: m.content }));
+
+      const systemPrompt = `Sei un assistente documentale intelligente per uno studio professionale.
+
+REGOLE FONDAMENTALI:
+1. Rispondi in italiano, in modo professionale ma naturale
+2. Usa SOLO le informazioni fornite nel contesto documentale
+3. Se non trovi informazioni pertinenti, dillo chiaramente: "Non ho trovato documenti che rispondano alla tua domanda"
+4. Cita sempre le fonti usando [Documento: nome_file]
+5. Se l'utente fa riferimento a "questo documento", "il rapportino", "quella fattura", etc., cerca nel contesto conversazione precedente
+
+CONTESTO DOCUMENTALE:
+${contextChunks.map(c => `[Documento: ${c.document}]\n${c.text.substring(0, 800)}...`).join('\n\n---\n\n')}
+
+STORICO CONVERSAZIONE (dalla più recente):
+${conversationHistory.map(m => `${m.role === 'user' ? 'Utente' : 'Assistente'}: ${m.content.substring(0, 200)}${m.content.length > 200 ? '...' : ''}`).join('\n')}`;
+
+      // 6. Chiama Ollama
+      const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+      const ollamaResponse = await fetch(`${ollamaUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama3.2',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...conversationHistory.slice(-4), // Ultimi 2 scambi per contesto
+            { role: 'user', content: message },
+          ],
+          stream: false,
+          options: {
+            temperature: 0.3,
+            num_predict: 800,
+          },
+        }),
+      });
+
+      if (!ollamaResponse.ok) {
+        throw new Error(`Ollama error: ${ollamaResponse.status}`);
+      }
+
+      const ollamaData = await ollamaResponse.json();
+      const assistantResponse = ollamaData.message?.content || 'Mi dispiace, non sono riuscito a elaborare la risposta.';
+
+      // 7. Salva risposta con fonti
+      const sources = searchResults.results.map(r => ({
+        document_id: r.document_id,
+        filename: r.original_filename,
+        chunk_id: r.chunk_id,
+        score: r.final_score,
+      }));
+
+      await chatRepo.saveMessage(
+        sessionId,
+        'assistant',
+        assistantResponse,
+        sources,
+        ollamaData.eval_count || null
+      );
+
+      // 8. Aggiorna titolo se è la prima domanda
+      const messageCount = await chatRepo.countMessages(sessionId);
+      if (messageCount <= 2 && session.title === 'Nuova conversazione') {
+        // Genera titolo automatico dalla prima domanda
+        const shortTitle = message.length > 40 ? message.substring(0, 40) + '...' : message;
+        await chatRepo.updateSessionTitle(sessionId, shortTitle);
+      }
+
+      const duration = Date.now() - startTime;
+      console.log(`[CHAT] Risposta generata in ${duration}ms per sessione ${sessionId}`);
+
+      return reply.send({
+        success: true,
+        response: assistantResponse,
+        sources: sources.slice(0, 3), // Prime 3 fonti più rilevanti
+        timing: { total_ms: duration },
+      });
+
+    } catch (error) {
+      console.error('[CHAT] Errore elaborazione messaggio:', error);
+      return reply.code(500).send({
+        error: 'Errore durante l\'elaborazione del messaggio',
+        message: error.message,
+      });
+    }
+  });
+
+  /**
+   * DELETE /archive/chat/sessions/:id
+   * Elimina una sessione di chat
+   */
+  fastify.delete('/chat/sessions/:id', async (request, reply) => {
+    try {
+      const { id } = request.params;
+      const { db } = request.query;
+
+      if (!db) {
+        return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
+      }
+
+      const session = await chatRepo.findSessionById(id);
+      if (!session || session.db !== db) {
+        return reply.code(404).send({ error: 'Sessione non trovata' });
+      }
+
+      await chatRepo.deleteSession(id);
+      console.log(`[CHAT] Sessione eliminata: ${id}`);
+
+      return reply.send({
+        success: true,
+        message: 'Sessione eliminata',
+      });
+    } catch (error) {
+      console.error('[CHAT] Errore eliminazione sessione:', error);
+      return reply.code(500).send({
+        error: 'Errore durante l\'eliminazione della sessione',
+        message: error.message,
+      });
+    }
+  });
 };
 
 export default archiveRoutes;
