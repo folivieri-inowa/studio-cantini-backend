@@ -398,14 +398,7 @@ const archiveRoutes = async (fastify) => {
     } catch (error) {
       console.error('[UPLOAD] ❌ ERRORE:', error);
       console.error('[UPLOAD] Stack:', error.stack);
-      // Cleanup pg-boss if initialized
-      if (boss) {
-        try {
-          await boss.stop();
-        } catch (bossErr) {
-          console.error('[UPLOAD] Errore chiusura pg-boss:', bossErr);
-        }
-      }
+      // NOTA: pg-boss è un singleton condiviso, NON va mai fermato nelle routes
       return reply.code(500).send({
         error: 'Errore durante il caricamento del documento',
         message: error.message,
