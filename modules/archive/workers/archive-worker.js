@@ -1124,7 +1124,7 @@ async function handleMetadataJob(job) {
       doc_amount: totalAmount,
       doc_sender: metadata.parties?.issuer?.name || metadata.doc_sender || null,
       doc_recipient: metadata.parties?.holder?.name || metadata.parties?.counterparty?.name || metadata.doc_recipient || null,
-      confidence_score: metadata.confidence?.overall || null,
+      // confidence_score rimosso: il valore è già in extracted_metadata->confidence->overall
     });
 
     await documentRepo.updateProcessingStatus(document.id, 'metadata_completed');
