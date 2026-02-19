@@ -16,6 +16,7 @@ import pg from 'pg';
 import * as Minio from 'minio';
 import FormData from 'form-data';
 import pdfParse from 'pdf-parse';
+import { QdrantClient } from '@qdrant/js-client-rest';
 import { DocumentRepository } from '../repositories/document.repository.js';
 import { ChunkRepository } from '../repositories/chunk.repository.js';
 
@@ -33,6 +34,15 @@ const METADATA_MODEL = process.env.OLLAMA_METADATA_MODEL || 'mistral-nemo:latest
 // Docling OCR Configuration
 const DOCLING_URL = process.env.DOCLING_URL || 'http://localhost:5001';
 const USE_DOCLING_OCR = process.env.USE_DOCLING_OCR !== 'false'; // Default: true
+
+// Qdrant Configuration
+const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
+const QDRANT_COLLECTION = 'archive_document_chunks';
+const EMBEDDING_SIZE = 1024; // bge-m3:latest produce 1024 dims
+const EMBEDDING_DISTANCE = 'Cosine';
+
+// Inizializza Qdrant client
+const qdrantClient = new QdrantClient({ url: QDRANT_URL });
 
 // Timeout e Retry Configuration per documenti grandi (fino a 10MB)
 const DOC_PROCESSING_CONFIG = {
@@ -1171,6 +1181,134 @@ async function handleCleaningJob(job) {
 /**
  * Handler job Embedding
  */
+/**
+ * Inizializza la collection Qdrant all'avvio del worker.
+ * Se la collection non esiste la crea con size=1024 (bge-m3).
+ * Se esiste con dimensioni diverse la ricrea e resetta synced_to_qdrant.
+ *
+ * @returns {{ recreated: boolean }}
+ */
+async function initQdrantCollection() {
+  try {
+    const collections = await qdrantClient.getCollections();
+    const existing = collections.collections.find(c => c.name === QDRANT_COLLECTION);
+
+    if (existing) {
+      const info = await qdrantClient.getCollection(QDRANT_COLLECTION);
+      const currentSize = info.config?.params?.vectors?.size;
+
+      if (currentSize === EMBEDDING_SIZE) {
+        console.log(`✅ Qdrant collection "${QDRANT_COLLECTION}" OK (size=${EMBEDDING_SIZE})`);
+        return { recreated: false };
+      }
+
+      console.warn(`⚠️ Qdrant collection "${QDRANT_COLLECTION}" ha size=${currentSize}, atteso ${EMBEDDING_SIZE}. Ricreazione...`);
+      await qdrantClient.deleteCollection(QDRANT_COLLECTION);
+    }
+
+    await qdrantClient.createCollection(QDRANT_COLLECTION, {
+      vectors: {
+        size: EMBEDDING_SIZE,
+        distance: EMBEDDING_DISTANCE,
+      },
+      optimizers_config: { default_segment_number: 2 },
+      replication_factor: 1,
+    });
+
+    console.log(`✅ Qdrant collection "${QDRANT_COLLECTION}" creata (size=${EMBEDDING_SIZE}, distance=${EMBEDDING_DISTANCE})`);
+
+    if (existing) {
+      // Collection ricreata: resetta synced_to_qdrant per tutti i chunks esistenti
+      const client = await pool.connect();
+      try {
+        await client.query(`
+          UPDATE archive_chunks
+          SET synced_to_qdrant = false, qdrant_id = NULL
+          WHERE synced_to_qdrant = true
+        `);
+        console.log('♻️  synced_to_qdrant resettato per tutti i chunks esistenti');
+      } finally {
+        client.release();
+      }
+      return { recreated: true };
+    }
+
+    return { recreated: false };
+  } catch (err) {
+    console.error('❌ Errore init Qdrant collection:', err.message);
+    // Non blocca l'avvio del worker — la search semantica semplicemente non funzionerà
+    return { recreated: false };
+  }
+}
+
+/**
+ * Carica i chunk con i loro embedding su Qdrant in batch da 100.
+ * Aggiorna synced_to_qdrant=true e qdrant_id su archive_chunks.
+ *
+ * @param {string} documentId
+ * @param {Object} meta - { db, folderPath, documentType }
+ */
+async function upsertChunksToQdrant(documentId, meta) {
+  const BATCH_SIZE = 100;
+
+  const client = await pool.connect();
+  try {
+    const { rows: dbChunks } = await client.query(
+      `SELECT id, chunk_index, chunk_text, embedding
+       FROM archive_chunks
+       WHERE document_id = $1
+         AND synced_to_qdrant = false
+         AND embedding IS NOT NULL
+       ORDER BY chunk_index`,
+      [documentId]
+    );
+
+    if (dbChunks.length === 0) {
+      console.warn(`⚠️ Nessun chunk da sincronizzare per doc ${documentId}`);
+      return;
+    }
+
+    console.log(`📤 Qdrant upsert: ${dbChunks.length} chunks per doc ${documentId}`);
+
+    for (let i = 0; i < dbChunks.length; i += BATCH_SIZE) {
+      const batch = dbChunks.slice(i, i + BATCH_SIZE);
+
+      const points = batch.map(chunk => ({
+        id: chunk.id,  // UUID del chunk — Qdrant accetta UUID come ID
+        vector: Array.isArray(chunk.embedding) ? chunk.embedding : JSON.parse(chunk.embedding),
+        payload: {
+          document_id: documentId,
+          chunk_id: chunk.id,
+          db: meta.db || null,
+          folder_path: meta.folderPath || null,
+          document_type: meta.documentType || null,
+          chunk_order: chunk.chunk_index,
+          text_preview: chunk.chunk_text ? chunk.chunk_text.substring(0, 200) : null,
+        },
+      }));
+
+      await qdrantClient.upsert(QDRANT_COLLECTION, { wait: true, points });
+
+      // Aggiorna synced_to_qdrant per questo batch
+      const batchIds = batch.map(c => c.id);
+      await client.query(
+        `UPDATE archive_chunks
+         SET synced_to_qdrant = true,
+             qdrant_id = id::text,
+             updated_at = NOW()
+         WHERE id = ANY($1)`,
+        [batchIds]
+      );
+
+      console.log(`  ✅ Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.length} punti caricati su Qdrant`);
+    }
+
+    console.log(`✅ Qdrant sync completato: ${dbChunks.length} chunks per doc ${documentId}`);
+  } finally {
+    client.release();
+  }
+}
+
 async function handleEmbeddingJob(job) {
   console.log(`🔢 [${WORKER_ID}] Embedding Job: ${job.id}, Document: ${job.data.documentId}`);
 
@@ -1212,6 +1350,13 @@ async function handleEmbeddingJob(job) {
     }
 
     await documentRepo.updateProcessingStatus(document.id, 'completed');
+
+    // Carica i chunk su Qdrant (il bug principale — era mancante!)
+    await upsertChunksToQdrant(documentId, {
+      db,
+      folderPath: document.folder_path || null,
+      documentType: document.document_type || null,
+    });
 
     health.jobsProcessed++;
     console.log(`✅ Pipeline completata! Documento ${documentId} elaborato con successo.`);
@@ -1315,6 +1460,33 @@ async function startWorker() {
   // Avvia pg-boss
   await boss.start();
   console.log('✅ pg-boss connesso');
+
+  // Inizializza Qdrant collection (crea se non esiste, ricrea se dimensioni errate)
+  const { recreated } = await initQdrantCollection();
+  if (recreated) {
+    console.log('♻️  Qdrant collection ricreata — i documenti esistenti verranno ri-embeddati');
+    // Re-schedule embedding per documenti completati con chunks non sincronizzati
+    const client = await pool.connect();
+    try {
+      const { rows: docsToReEmbed } = await client.query(`
+        SELECT DISTINCT d.id, d.db
+        FROM archive_documents d
+        JOIN archive_chunks c ON c.document_id = d.id
+        WHERE d.processing_status = 'completed'
+          AND c.synced_to_qdrant = false
+        ORDER BY d.created_at DESC
+      `);
+      console.log(`♻️  ${docsToReEmbed.length} documenti da ri-embeddare`);
+      for (const doc of docsToReEmbed) {
+        await boss.send('archive-embedding', { documentId: doc.id, db: doc.db, reEmbedding: true }, {
+          priority: -1,
+          singletonKey: `re-embed-${doc.id}`,
+        });
+      }
+    } finally {
+      client.release();
+    }
+  }
 
   // Crea le code necessarie per inviare job
   await boss.createQueue('archive-ocr');

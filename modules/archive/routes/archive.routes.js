@@ -750,7 +750,8 @@ const archiveRoutes = async (fastify) => {
 
   /**
    * POST /archive/search
-   * Ricerca full-text semplice
+   * Ricerca ibrida: full-text (PostgreSQL tsvector) + semantica (Qdrant RRF)
+   * Fallback a ricerca keyword-only se Qdrant/Ollama non disponibili.
    */
   fastify.post('/search', async (request, reply) => {
     try {
@@ -760,103 +761,88 @@ const archiveRoutes = async (fastify) => {
         return reply.code(400).send({ error: 'Parametri "db" e "query" obbligatori' });
       }
 
-      const documentRepo = new DocumentRepository(fastify.pg);
-
-      // Ricerca per parole chiave (OR tra tutte le parole)
-      const keywords = query.trim().split(/\s+/).filter(k => k.length > 2);
-
-      let sqlQuery;
-      let params;
-      let countQuery;
-      let countParams;
-
-      if (keywords.length === 0) {
-        // Ricerca semplice se non ci sono parole valide
-        const searchTerm = `%${query}%`;
-        sqlQuery = `
-          SELECT *
-          FROM archive_documents
-          WHERE db = $1
-            AND deleted_at IS NULL
-            AND (
-              original_filename ILIKE $2
-              OR title ILIKE $2
-              OR COALESCE(extracted_text, '') ILIKE $2
-            )
-          ORDER BY created_at DESC
-          LIMIT $3 OFFSET $4
-        `;
-        params = [db, searchTerm, limit, offset];
-        countQuery = `SELECT COUNT(*) FROM archive_documents
-           WHERE db = $1
-             AND deleted_at IS NULL
-             AND (original_filename ILIKE $2 OR title ILIKE $2 OR COALESCE(extracted_text, '') ILIKE $2)`;
-        countParams = [db, searchTerm];
-      } else {
-        // Ricerca con OR tra parole chiave
-        const conditions = keywords.map((_, i) => `
-            original_filename ILIKE $${i + 2}
-            OR title ILIKE $${i + 2}
-            OR COALESCE(extracted_text, '') ILIKE $${i + 2}
-        `).join(' OR ');
-
-        sqlQuery = `
-          SELECT *
-          FROM archive_documents
-          WHERE db = $1
-            AND deleted_at IS NULL
-            AND (${conditions})
-          ORDER BY created_at DESC
-          LIMIT $${keywords.length + 2} OFFSET $${keywords.length + 3}
-        `;
-        params = [db, ...keywords.map(k => `%${k}%`), limit, offset];
-
-        const countConditions = keywords.map((_, i) => `
-            original_filename ILIKE $${i + 2}
-            OR title ILIKE $${i + 2}
-            OR COALESCE(extracted_text, '') ILIKE $${i + 2}
-        `).join(' OR ');
-        countQuery = `SELECT COUNT(*) FROM archive_documents
-           WHERE db = $1
-             AND deleted_at IS NULL
-             AND (${countConditions})`;
-        countParams = [db, ...keywords.map(k => `%${k}%`)];
-      }
-
-      const result = await fastify.pg.query(sqlQuery, params);
-      const countResult = await fastify.pg.query(countQuery, countParams);
-
-      return reply.send({
-        success: true,
-        query,
-        results: result.rows.map(doc => ({
-          document_id: doc.id,
-          id: doc.id,
-          original_filename: doc.original_filename,
-          title: doc.title,
-          file_size: doc.file_size,
-          mime_type: doc.mime_type,
-          processing_status: doc.processing_status,
-          priority: doc.priority,
-          created_at: doc.created_at,
-          folder_path: doc.folder_path,
-          relevance_score: 1.0,
-          match_type: 'fulltext',
-          highlight: doc.extracted_text ? doc.extracted_text.substring(0, 500) : null,
-          extracted_text: doc.extracted_text,
-        })),
-        metrics: {
-          total_results: parseInt(countResult.rows[0].count),
-          fulltext_count: result.rows.length,
-          semantic_count: 0,
-          search_time_ms: 0,
-        },
-        pagination: {
+      try {
+        // Ricerca ibrida tramite HybridSearchService
+        const hybridSearch = createHybridSearchService();
+        const searchResults = await hybridSearch.search({
+          db,
+          query,
+          ...filters,
           limit,
           offset,
-          total: parseInt(countResult.rows[0].count),
-        },
-      });
+        });
+
+        return reply.send({
+          success: true,
+          query,
+          results: (searchResults.results || []).map(r => ({
+            document_id: r.document_id || r.id,
+            id: r.document_id || r.id,
+            original_filename: r.original_filename,
+            title: r.title,
+            file_size: r.file_size,
+            mime_type: r.mime_type,
+            processing_status: r.processing_status,
+            priority: r.priority,
+            created_at: r.created_at,
+            folder_path: r.folder_path,
+            relevance_score: r.final_score || r.rrfScore || 1.0,
+            match_type: r.match_type || 'hybrid',
+            highlight: r.chunk_text ? r.chunk_text.substring(0, 500) : (r.extracted_text ? r.extracted_text.substring(0, 500) : null),
+          })),
+          metrics: {
+            total_results: searchResults.total || 0,
+            fulltext_count: searchResults.fulltext_count || 0,
+            semantic_count: searchResults.semantic_count || 0,
+            search_time_ms: searchResults.search_time_ms || 0,
+          },
+          pagination: { limit, offset },
+        });
+      } catch (hybridErr) {
+        // Fallback a ricerca keyword se Qdrant/Ollama non disponibili
+        fastify.log.warn({ err: hybridErr }, '[SEARCH] Fallback a ricerca keyword (hybrid search non disponibile)');
+
+        const searchTerm = `%${query}%`;
+        const result = await fastify.pg.query(
+          `SELECT id, original_filename, title, file_size, mime_type,
+                  processing_status, priority, created_at, folder_path,
+                  extracted_text
+           FROM archive_documents
+           WHERE db = $1
+             AND deleted_at IS NULL
+             AND (
+               original_filename ILIKE $2
+               OR COALESCE(title, '') ILIKE $2
+               OR COALESCE(extracted_text, '') ILIKE $2
+             )
+           ORDER BY created_at DESC
+           LIMIT $3 OFFSET $4`,
+          [db, searchTerm, limit, offset]
+        );
+
+        return reply.send({
+          success: true,
+          query,
+          fallback: true,
+          results: result.rows.map(doc => ({
+            document_id: doc.id,
+            id: doc.id,
+            original_filename: doc.original_filename,
+            title: doc.title,
+            file_size: doc.file_size,
+            mime_type: doc.mime_type,
+            processing_status: doc.processing_status,
+            priority: doc.priority,
+            created_at: doc.created_at,
+            folder_path: doc.folder_path,
+            relevance_score: 1.0,
+            match_type: 'fulltext',
+            highlight: doc.extracted_text ? doc.extracted_text.substring(0, 500) : null,
+          })),
+          metrics: { total_results: result.rows.length, fulltext_count: result.rows.length, semantic_count: 0 },
+          pagination: { limit, offset },
+        });
+      }
     } catch (error) {
       console.error('Errore ricerca:', error);
       return reply.code(500).send({
@@ -1473,6 +1459,43 @@ const archiveRoutes = async (fastify) => {
   });
 
   /**
+   * Factory per HybridSearchService con firma corretta.
+   * Crea un wrapper Ollama compatibile con l'interfaccia del service.
+   */
+  function createHybridSearchService() {
+    const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+    const embeddingModel = process.env.EMBEDDING_MODEL || 'bge-m3:latest';
+
+    // Wrapper fetch-based compatibile con l'interfaccia ollama.embeddings()
+    const ollamaClient = {
+      embeddings: async ({ model, prompt }) => {
+        const res = await fetch(`${ollamaUrl}/api/embeddings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model, prompt }),
+        });
+        if (!res.ok) throw new Error(`Ollama embeddings error: ${res.statusText}`);
+        return res.json(); // { embedding: float[] }
+      },
+    };
+
+    return new HybridSearchService({
+      pgPool: fastify.pg,
+      qdrantClient,
+      ollamaClient,
+      config: {
+        embeddingModel,
+        qdrantCollection: 'archive_document_chunks',
+        fusionMethod: 'rrf',
+        weights: {
+          fullText: parseFloat(process.env.KEYWORD_WEIGHT || '0.3'),
+          semantic: parseFloat(process.env.SEMANTIC_WEIGHT || '0.7'),
+        },
+      },
+    });
+  }
+
+  /**
    * POST /archive/chat/sessions
    * Crea una nuova sessione di chat
    */
@@ -1608,7 +1631,7 @@ const archiveRoutes = async (fastify) => {
       const recentMessages = await chatRepo.getRecentMessages(sessionId, 6);
 
       // 3. Ricerca vettoriale nel contesto della conversazione
-      const hybridSearch = new HybridSearchService(fastify.pg, qdrantClient);
+      const hybridSearch = createHybridSearchService();
       const searchResults = await hybridSearch.search({
         db,
         query: message,
@@ -1650,7 +1673,7 @@ ${conversationHistory.map(m => `${m.role === 'user' ? 'Utente' : 'Assistente'}: 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'llama3.2',
+          model: process.env.OLLAMA_CHAT_MODEL || 'llama3.2',
           messages: [
             { role: 'system', content: systemPrompt },
             ...conversationHistory.slice(-4), // Ultimi 2 scambi per contesto
