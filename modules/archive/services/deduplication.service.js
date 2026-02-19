@@ -163,20 +163,19 @@ export class DeduplicationService {
   async findExactDuplicate(fileHash, db) {
     try {
       const result = await this.pg.query(`
-        SELECT 
+        SELECT
           id,
-          title,
           original_filename,
-          doc_type,
+          document_type,
           doc_date,
-          folder_id,
+          folder_path,
           created_at,
-          created_by,
-          file_hash
+          file_hash,
+          processing_status
         FROM archive_documents
-        WHERE db = $1 
+        WHERE db = $1
           AND file_hash = $2
-          AND is_current_version = TRUE
+          AND processing_status IN ('completed', 'embedding_completed', 'cleaning_completed', 'ocr_completed', 'pending')
           AND deleted_at IS NULL
         LIMIT 1
       `, [db, fileHash]);
@@ -273,28 +272,27 @@ export class DeduplicationService {
         .toLowerCase()
         .trim();
 
-      // Query fuzzy su filename + doc_type + doc_date
+      // Query fuzzy su filename + document_type
       let query = `
-        SELECT 
+        SELECT
           id,
-          title,
           original_filename,
-          doc_type,
+          document_type,
           doc_date,
-          folder_id,
+          folder_path,
           similarity(LOWER(original_filename), $2) as filename_similarity
         FROM archive_documents
-        WHERE db = $1 
-          AND is_current_version = TRUE
+        WHERE db = $1
+          AND processing_status != 'failed'
           AND deleted_at IS NULL
       `;
 
       const params = [db, normalizedFilename];
       let paramIndex = 3;
 
-      if (metadata.doc_type) {
-        query += ` AND doc_type = $${paramIndex++}`;
-        params.push(metadata.doc_type);
+      if (metadata.document_type) {
+        query += ` AND document_type = $${paramIndex++}`;
+        params.push(metadata.document_type);
       }
 
       if (metadata.doc_date) {
@@ -387,15 +385,15 @@ export class DeduplicationService {
     try {
       // 1. Duplicati esatti (stesso hash)
       const exactDuplicates = await this.pg.query(`
-        SELECT 
+        SELECT
           file_hash,
           ARRAY_AGG(id ORDER BY created_at DESC) as document_ids,
-          ARRAY_AGG(title ORDER BY created_at DESC) as titles,
+          ARRAY_AGG(original_filename ORDER BY created_at DESC) as titles,
           COUNT(*) as count
         FROM archive_documents
-        WHERE db = $1 
+        WHERE db = $1
           AND file_hash IS NOT NULL
-          AND is_current_version = TRUE
+          AND processing_status NOT IN ('failed')
           AND deleted_at IS NULL
         GROUP BY file_hash
         HAVING COUNT(*) > 1
@@ -470,7 +468,7 @@ export class DeduplicationService {
           await this.pg.query(`
             UPDATE archive_documents
             SET deleted_at = NOW(),
-                pipeline_status = 'duplicate_deleted'
+                processing_status = 'failed'
             WHERE id = ANY($1)
           `, [deleteIds]);
 

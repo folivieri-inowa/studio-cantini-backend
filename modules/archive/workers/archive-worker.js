@@ -562,7 +562,8 @@ async function downloadFile(bucket, objectPath) {
     console.warn(`⚠️ MinIO client fallito: ${minioError.message}`);
 
     // Fallback a storage locale
-    const localPath = `/Users/francescoolivieri/Desktop/Sviluppo inowa/studio_cantini/backend/storage/${bucket}/${objectPath}`;
+    const localStorageBase = process.env.LOCAL_STORAGE_PATH || '/app/uploads';
+    const localPath = `${localStorageBase}/${bucket}/${objectPath}`;
     try {
       const fs = await import('fs');
       const data = fs.readFileSync(localPath);

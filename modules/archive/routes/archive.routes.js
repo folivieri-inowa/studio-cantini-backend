@@ -17,7 +17,7 @@ import { HybridSearchService } from '../services/hybrid-search.service.js';
 import { QdrantClient } from '@qdrant/js-client-rest';
 import { sanitizeFileName } from '../../../lib/utils.js';
 import { createMinioClient, getMinioBaseUrl } from '../../../lib/minio-config.js';
-import PgBoss from 'pg-boss';
+import { getBoss } from '../workers/boss.singleton.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -217,15 +217,8 @@ const archiveRoutes = async (fastify) => {
         logger: fastify.log || console,
       });
 
-      // Inizializza pg-boss per l'accodamento job
-      boss = new PgBoss({
-        connectionString: process.env.POSTGRES_URL,
-        retryLimit: 3,
-        retryDelay: 30,
-        retryBackoff: true,
-        expireInMinutes: 60,
-      });
-      await boss.start();
+      // Usa il singleton pg-boss (non creare/distruggere ad ogni richiesta)
+      boss = await getBoss(process.env.POSTGRES_URL);
 
       // Calcola hash dal buffer già letto
       console.log('[UPLOAD] 7. Calcolo hash...');
@@ -434,13 +427,8 @@ const archiveRoutes = async (fastify) => {
           console.error('[UPLOAD] ❌ Errore aggiornamento stato:', e);
         }
       } finally {
-        console.log('[UPLOAD] 19. Chiusura pg-boss...');
-        try {
-          await boss.stop();
-          console.log('[UPLOAD] 20. ✅ pg-boss chiuso');
-        } catch (stopError) {
-          console.error('[UPLOAD] ⚠️ Errore chiusura pg-boss:', stopError.message);
-        }
+        // Il singleton pg-boss NON va mai fermato nelle routes
+        console.log('[UPLOAD] 19. Job accodato, singleton pg-boss rimane attivo');
       }
 
       console.log('[UPLOAD] 21. Preparazione risposta...');
@@ -1144,15 +1132,8 @@ const archiveRoutes = async (fastify) => {
       // Resetta il documento per il nuovo tentativo
       await documentRepo.resetForRetry(id);
 
-      // Inizializza pg-boss e accoda un nuovo job OCR
-      boss = new PgBoss({
-        connectionString: process.env.POSTGRES_URL,
-        retryLimit: 3,
-        retryDelay: 30,
-        retryBackoff: true,
-        expireInMinutes: 60,
-      });
-      await boss.start();
+      // Usa il singleton pg-boss (non creare/distruggere ad ogni richiesta)
+      boss = await getBoss(process.env.POSTGRES_URL);
 
       // Verifica che il queue esista
       await boss.createQueue('archive-ocr');
@@ -1186,15 +1167,8 @@ const archiveRoutes = async (fastify) => {
         error: 'Errore durante il retry del documento',
         message: error.message,
       });
-    } finally {
-      if (boss) {
-        try {
-          await boss.stop();
-        } catch (e) {
-          console.error('[RETRY] Errore chiusura pg-boss:', e.message);
-        }
-      }
     }
+    // Il singleton pg-boss NON va mai fermato nelle routes
   });
 
   /**
@@ -1453,14 +1427,10 @@ const archiveRoutes = async (fastify) => {
         }
       }
 
-      // Cancella jobs da pg-boss
-      let boss = null;
+      // Cancella jobs da pg-boss usando il singleton
       let deletedJobs = 0;
       try {
-        boss = new PgBoss({
-          connectionString: process.env.POSTGRES_URL,
-        });
-        await boss.start();
+        const boss = await getBoss(process.env.POSTGRES_URL);
         // Cancella tutti i jobs archive-*
         const deleted = await boss.getDb().executeSql(
           "DELETE FROM pgboss.job WHERE name LIKE 'archive-%' RETURNING id"
@@ -1468,10 +1438,6 @@ const archiveRoutes = async (fastify) => {
         deletedJobs = deleted?.rows?.length || 0;
       } catch (bossErr) {
         console.error('[CLEAR-ALL] Errore cancellazione jobs pg-boss:', bossErr.message);
-      } finally {
-        if (boss) {
-          try { await boss.stop(); } catch (e) { /* ignore */ }
-        }
       }
 
       // TRUNCATE della tabella (cascata su chunks e processing_jobs)
