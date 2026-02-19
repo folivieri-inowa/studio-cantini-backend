@@ -264,13 +264,19 @@ export class JobRepository {
    * Elimina vecchi jobs completati (cleanup)
    */
   async deleteOldCompletedJobs(daysOld = 30) {
+    // Validazione input per prevenire SQL injection
+    const days = parseInt(daysOld, 10);
+    if (isNaN(days) || days < 0 || days > 365) {
+      throw new Error(`daysOld non valido: ${daysOld}. Deve essere un intero tra 0 e 365.`);
+    }
+
     const query = `
-      DELETE FROM archive_processing_jobs 
+      DELETE FROM archive_processing_jobs
       WHERE job_status IN ('completed', 'cancelled')
-        AND completed_at < NOW() - INTERVAL '${daysOld} days'
+        AND completed_at < NOW() - ($1 * INTERVAL '1 day')
       RETURNING id
     `;
-    const result = await this.pg.query(query);
+    const result = await this.pg.query(query, [days]);
     return result.rows;
   }
 
@@ -278,13 +284,19 @@ export class JobRepository {
    * Trova jobs stuck (in running da troppo tempo)
    */
   async findStuckJobs(minutesThreshold = 30) {
+    // Validazione input per prevenire SQL injection
+    const minutes = parseInt(minutesThreshold, 10);
+    if (isNaN(minutes) || minutes < 0 || minutes > 1440) {
+      throw new Error(`minutesThreshold non valido: ${minutesThreshold}. Deve essere un intero tra 0 e 1440.`);
+    }
+
     const query = `
-      SELECT * FROM archive_processing_jobs 
+      SELECT * FROM archive_processing_jobs
       WHERE job_status = 'running'
-        AND started_at < NOW() - INTERVAL '${minutesThreshold} minutes'
+        AND started_at < NOW() - ($1 * INTERVAL '1 minute')
       ORDER BY started_at ASC
     `;
-    const result = await this.pg.query(query);
+    const result = await this.pg.query(query, [minutes]);
     return result.rows;
   }
 

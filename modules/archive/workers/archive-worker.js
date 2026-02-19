@@ -473,9 +473,40 @@ async function generateEmbedding(text) {
 }
 
 /**
- * Pulisce il testo usando LLM
+ * Pulisce il testo usando LLM.
+ * Per testi lunghi usa chunking da 8000 chars con overlap 200
+ * per non perdere contenuto (fix: prima troncava a 4000 chars).
  */
 async function cleanTextWithLLM(text) {
+  const MAX_CHUNK = 8000;
+  const OVERLAP = 200;
+
+  // Se il testo è corto, processa direttamente
+  if (text.length <= MAX_CHUNK) {
+    return cleanTextChunk(text);
+  }
+
+  // Altrimenti processa in chunks e concatena
+  console.log(`✂️  Cleaning testo lungo (${text.length} chars) in chunks da ${MAX_CHUNK}...`);
+  const parts = [];
+  let offset = 0;
+
+  while (offset < text.length) {
+    const end = Math.min(offset + MAX_CHUNK, text.length);
+    const chunk = text.substring(offset, end);
+    const cleaned = await cleanTextChunk(chunk);
+    parts.push(cleaned);
+    offset += MAX_CHUNK - OVERLAP;
+    if (offset >= text.length - OVERLAP) break;
+  }
+
+  return parts.join(' ');
+}
+
+/**
+ * Pulisce un singolo chunk di testo con LLM
+ */
+async function cleanTextChunk(text) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), DOC_PROCESSING_CONFIG.ollamaTimeoutMs);
 
@@ -485,7 +516,7 @@ async function cleanTextWithLLM(text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: CLEANING_MODEL,
-        prompt: `Pulisci e formatta il seguente testo estratto da un documento. Correggi errori OCR, migliora la formattazione, preserva struttura e tabelle. Restituisci SOLO il testo pulito:\n\n${text.substring(0, 4000)}`,
+        prompt: `Pulisci e formatta il seguente testo estratto da un documento. Correggi errori OCR, migliora la formattazione, preserva struttura e tabelle. Restituisci SOLO il testo pulito:\n\n${text}`,
         stream: false,
         options: {
           temperature: 0.1,

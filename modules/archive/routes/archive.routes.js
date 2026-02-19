@@ -1356,23 +1356,33 @@ const archiveRoutes = async (fastify) => {
   /**
    * DELETE /archive/documents/clear-all
    * Elimina TUTTI i documenti dall'archivio (operazione distruttiva)
-   * Richiede parametro confirm='DELETE_ALL' per sicurezza
+   * Richiede: autenticazione JWT + header X-Confirm-Dangerous-Operation
    */
-  fastify.delete('/documents/clear-all', async (request, reply) => {
+  fastify.delete('/documents/clear-all', {
+    preHandler: [fastify.authenticate],
+  }, async (request, reply) => {
     try {
-      const { db, confirm } = request.body;
+      const { db } = request.body;
 
       if (!db) {
         return reply.code(400).send({ error: 'Parametro "db" obbligatorio' });
       }
 
-      // Sicurezza: richiede conferma esplicita
-      if (confirm !== 'DELETE_ALL') {
+      // Sicurezza: richiede header di conferma esplicita (difesa contro CSRF)
+      const confirmHeader = request.headers['x-confirm-dangerous-operation'];
+      if (confirmHeader !== 'DELETE_ALL_DOCUMENTS') {
         return reply.code(403).send({
           error: 'Conferma richiesta',
-          message: 'Per eliminare tutti i documenti, includi nel body: { confirm: "DELETE_ALL" }',
+          message: 'Aggiungere header: X-Confirm-Dangerous-Operation: DELETE_ALL_DOCUMENTS',
         });
       }
+
+      // Log audit
+      fastify.log.warn({
+        user: request.user?.id || request.user?.email || 'unknown',
+        db,
+        action: 'CLEAR_ALL_DOCUMENTS',
+      }, 'AUDIT: Richiesta cancellazione massiva documenti');
 
       const documentRepo = new DocumentRepository(fastify.pg);
 
