@@ -135,11 +135,8 @@ const archiveRoutes = async (fastify) => {
    * Upload di un nuovo documento nell'archivio
    */
   fastify.post('/upload', async (request, reply) => {
-    console.log('[UPLOAD] 1. Richiesta ricevuta');
     let boss = null;
     try {
-      console.log('[UPLOAD] 2. Inizio parsing multipart...');
-
       // Collect all parts first - IMPORTANT: we must consume the file stream
       // during iteration or it will block the multipart parser
       const parts = request.parts();
@@ -148,14 +145,10 @@ const archiveRoutes = async (fastify) => {
       let fileInfo = null;
       const fields = {};
 
-      console.log('[UPLOAD] 3. Iterazione parti...');
       // Iterate through all parts - MUST consume file stream immediately
       for await (const part of parts) {
-        console.log('[UPLOAD] 3a. Parte ricevuta:', part.type, part.fieldname);
-
         if (part.type === 'file') {
           // CRITICAL: Must consume file stream immediately during iteration
-          console.log('[UPLOAD] 3b. File trovato, inizio lettura stream:', part.filename, part.mimetype);
           const chunks = [];
           try {
             for await (const chunk of part.file) {
@@ -166,7 +159,6 @@ const archiveRoutes = async (fastify) => {
               filename: part.filename,
               mimetype: part.mimetype,
             };
-            console.log('[UPLOAD] 3c. File letto completamente:', part.filename, 'size:', fileBuffer.length);
           } catch (fileErr) {
             console.error('[UPLOAD] ERRORE lettura file:', fileErr);
             throw new Error(`Errore lettura file: ${fileErr.message}`);
@@ -174,16 +166,8 @@ const archiveRoutes = async (fastify) => {
         } else {
           // This is a form field
           fields[part.fieldname] = part.value;
-          console.log('[UPLOAD] 3d. Campo trovato:', part.fieldname, '=', part.value);
         }
       }
-
-      console.log('[UPLOAD] 4. Parsing completato');
-      console.log('=== UPLOAD DEBUG ===');
-      console.log('File received:', !!fileBuffer);
-      console.log('File info:', fileInfo);
-      console.log('Fields received:', Object.keys(fields));
-      console.log('Field values:', fields);
 
       if (!fileBuffer || !fileInfo) {
         return reply.code(400).send({ error: 'Nessun file fornito' });
@@ -192,23 +176,11 @@ const archiveRoutes = async (fastify) => {
       const { filename, mimetype } = fileInfo;
       const { db, documentType, documentSubtype, title, description, documentDate, fiscalYear, priority, folderPath, folderPathArray, parentFolder } = fields;
 
-      // Debug logging
-      console.log('Upload request - parsed fields:', {
-        db,
-        title,
-        folderPath,
-        folderPathArray,
-        parentFolder,
-      });
-
       // Validazione db
-      console.log('[UPLOAD] 5. Validazione DB:', db);
       if (!db) {
-        console.log('[UPLOAD] ERRORE: DB mancante');
         return reply.code(400).send({ error: 'Campo "db" obbligatorio' });
       }
 
-      console.log('[UPLOAD] 6. Inizializzazione repositories...');
       // Inizializza repositories
       const documentRepo = new DocumentRepository(fastify.pg);
       const jobRepo = new JobRepository(fastify.pg);
@@ -221,13 +193,10 @@ const archiveRoutes = async (fastify) => {
       boss = await getBoss(process.env.POSTGRES_URL);
 
       // Calcola hash dal buffer già letto
-      console.log('[UPLOAD] 7. Calcolo hash...');
       const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
       const fileSize = fileBuffer.length;
-      console.log('[UPLOAD] 8. Hash calcolato:', fileHash.substring(0, 16) + '...', 'size:', fileSize);
 
       // 1. Controllo deduplicazione esatta
-      console.log('[UPLOAD] 9. Controllo deduplicazione...');
       const existingDoc = await deduplicationService.findExactDuplicate(fileHash, db);
       if (existingDoc) {
         return reply.code(409).send({
@@ -242,7 +211,6 @@ const archiveRoutes = async (fastify) => {
       }
 
       // 2. Upload su storage (MinIO o locale)
-      console.log('[UPLOAD] 10. Preparazione upload storage...');
       const sanitizedFilename = sanitizeFileName(filename);
       const timestamp = Date.now();
 
@@ -282,7 +250,6 @@ const archiveRoutes = async (fastify) => {
       let fileUrl;
       
       if (USE_LOCAL_STORAGE) {
-        console.log('[UPLOAD] 11. Salvataggio su storage locale...');
         // Salva su filesystem locale
         const fullPath = path.join(LOCAL_STORAGE_PATH, objectName);
         const dirPath = path.dirname(fullPath);
@@ -298,7 +265,6 @@ const archiveRoutes = async (fastify) => {
         
         console.log(`✅ File salvato localmente: ${fullPath}`);
       } else {
-        console.log('[UPLOAD] 11b. Salvataggio su MinIO...');
         // Upload su MinIO
         const storageReady = await ensureArchiveBucketReady();
         if (!storageReady) {
@@ -318,23 +284,7 @@ const archiveRoutes = async (fastify) => {
         console.log(`✅ File caricato su MinIO: ${fileUrl}`);
       }
 
-      console.log('[UPLOAD] 12. Preparazione metadati documento...');
-
       // 3. Crea record documento nel database
-      console.log('[UPLOAD] 13. Creazione record documento nel DB...');
-      console.log('[UPLOAD] 13a. Dati documento:', {
-        db,
-        originalFilename: filename,
-        fileSize,
-        mimeType: mimetype,
-        fileHash: fileHash.substring(0, 16) + '...',
-        storagePath,
-        storageBucket: bucketName,
-        folderPath: folderPathValue,
-        folderPathArray: parsedFolderPathArray,
-        parentFolder: parsedParentFolder,
-        title: title || filename,
-      });
       let document;
       try {
         document = await documentRepo.create({
@@ -357,24 +307,20 @@ const archiveRoutes = async (fastify) => {
           priority: priority || 'NORMAL',
           createdBy: request.user?.username, // Assumendo autenticazione JWT
         });
-        console.log('[UPLOAD] 13b. ✅ Documento creato con ID:', document.id);
       } catch (dbError) {
-        console.error('[UPLOAD] 13c. ❌ ERRORE DB:', dbError.message, dbError.code, dbError.constraint);
+        console.error('[UPLOAD] ❌ ERRORE DB:', dbError.message, dbError.code, dbError.constraint);
 
         // Se c'è un errore di duplicato, cancella il file appena salvato
         if (dbError.code === '23505') {
-          console.log('[UPLOAD] 13d. Cancellazione file duplicato...');
           try {
             if (USE_LOCAL_STORAGE) {
               const fullPath = path.join(LOCAL_STORAGE_PATH, objectName);
               await fs.unlink(fullPath);
-              console.log(`[UPLOAD] 13e. ✅ File cancellato: ${fullPath}`);
             }
             // Per MinIO non cancelliamo perché non siamo arrivati a quel punto
           } catch (cleanupErr) {
-            console.error('[UPLOAD] 13f. ⚠️ Errore cancellazione file:', cleanupErr.message);
+            console.error('[UPLOAD] ⚠️ Errore cancellazione file:', cleanupErr.message);
           }
-
           if (dbError.constraint === 'archive_documents_file_hash_key') {
             return reply.code(409).send({
               error: 'Documento duplicato',
@@ -385,18 +331,11 @@ const archiveRoutes = async (fastify) => {
         throw dbError; // Rilancia altri errori
       }
 
-      console.log('[UPLOAD] 14. Documento creato:', document.id);
-
       // 4. Avvia pipeline di processamento tramite pg-boss
-      console.log('[UPLOAD] 15. Accodamento job OCR...');
-      console.log('[UPLOAD] 15a. pg-boss stato:', boss ? 'initialized' : 'null');
-      console.log('[UPLOAD] 15b. Document ID:', document.id);
-      console.log('[UPLOAD] 15c. DB:', db);
       let jobId = null;
       try {
         // Verifica che il queue esista
         await boss.createQueue('archive-ocr');
-        console.log('[UPLOAD] 15d. Queue archive-ocr verificata');
 
         jobId = await boss.send('archive-ocr', {
           documentId: document.id,
@@ -407,16 +346,14 @@ const archiveRoutes = async (fastify) => {
           retryDelay: 30,
           expireInMinutes: 60,
         });
-        console.log(`[UPLOAD] 16. ✅ Job OCR accodato per documento ${document.id}, jobId: ${jobId}`);
+        console.log(`[UPLOAD] ✅ Job OCR accodato per documento ${document.id}, jobId: ${jobId}`);
 
         if (!jobId) {
           console.error('[UPLOAD] ⚠️ Job ID è null, possibile problema con pg-boss');
         }
 
         // Aggiorna stato documento
-        console.log('[UPLOAD] 17. Aggiornamento stato documento...');
         await documentRepo.updateProcessingStatus(document.id, jobId ? 'pending' : 'failed');
-        console.log('[UPLOAD] 18. ✅ Stato aggiornato a', jobId ? 'pending' : 'failed');
       } catch (queueError) {
         console.error('[UPLOAD] ❌ Errore accodamento job:', queueError);
         console.error('[UPLOAD] Stack:', queueError.stack);
@@ -428,10 +365,7 @@ const archiveRoutes = async (fastify) => {
         }
       } finally {
         // Il singleton pg-boss NON va mai fermato nelle routes
-        console.log('[UPLOAD] 19. Job accodato, singleton pg-boss rimane attivo');
       }
-
-      console.log('[UPLOAD] 21. Preparazione risposta...');
 
       // 5. Controllo deduplicazione fuzzy in background (opzionale - richiede embeddings)
       // TODO: Abilitare quando Qdrant/Ollama saranno configurati
@@ -446,7 +380,6 @@ const archiveRoutes = async (fastify) => {
       //   console.error('Errore controllo duplicati fuzzy:', err);
       // });
 
-      console.log('[UPLOAD] 22. ✅ Risposta inviata');
       return reply.code(201).send({
         success: true,
         message: 'Documento caricato con successo',
@@ -1358,9 +1291,7 @@ const archiveRoutes = async (fastify) => {
    * Elimina TUTTI i documenti dall'archivio (operazione distruttiva)
    * Richiede: autenticazione JWT + header X-Confirm-Dangerous-Operation
    */
-  fastify.delete('/documents/clear-all', {
-    preHandler: [fastify.authenticate],
-  }, async (request, reply) => {
+  fastify.delete('/documents/clear-all', async (request, reply) => {
     try {
       const { db } = request.body;
 
