@@ -34,7 +34,7 @@ model_state = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Carica il modello all'avvio del servizio."""
-    logger.info(f"Caricamento modello {MODEL_NAME}...")
+    logger.info(f"🔄 Caricamento modello {MODEL_NAME}...")
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             MODEL_NAME,
@@ -53,12 +53,12 @@ async def lifespan(app: FastAPI):
         model_state["tokenizer"] = tokenizer
         model_state["model"] = model
         model_state["loaded"] = True
-        logger.info("Modello GOT-OCR2_0 caricato con successo")
+        logger.info("✅ Modello GOT-OCR2_0 caricato con successo")
     except Exception as e:
-        logger.error(f"Errore caricamento modello: {e}")
+        logger.error(f"❌ Errore caricamento modello: {e}")
         # Non blocca l'avvio — /health risponderà model_loaded: false
     yield
-    logger.info("Shutdown servizio GOT-OCR")
+    logger.info("🛑 Shutdown servizio GOT-OCR")
 
 
 app = FastAPI(title="GOT-OCR Service", lifespan=lifespan)
@@ -117,18 +117,28 @@ async def ocr_endpoint(file: UploadFile = File(...)):
     content = await file.read()
     filename = file.filename or "document"
 
-    logger.info(f"OCR richiesta: {filename} ({len(content)} bytes)")
+    logger.info(f"📄 OCR richiesta: {filename} ({len(content)} bytes)")
+
+    MAX_FILE_SIZE = int(os.getenv("GOT_OCR_MAX_FILE_MB", "50")) * 1024 * 1024
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File troppo grande: {len(content) // (1024*1024)}MB (max {MAX_FILE_SIZE // (1024*1024)}MB)"
+        )
 
     try:
         is_pdf = filename.lower().endswith(".pdf") or file.content_type == "application/pdf"
 
         if is_pdf:
             images = pdf_to_images(content, dpi=DPI)
-            logger.info(f"PDF: {len(images)} pagine")
+            logger.info(f"📄 PDF: {len(images)} pagine")
+
+            if not images:
+                raise HTTPException(status_code=422, detail="PDF senza pagine o non processabile")
 
             page_texts = []
             for i, image in enumerate(images):
-                logger.info(f"OCR pagina {i + 1}/{len(images)}...")
+                logger.info(f"🔍 OCR pagina {i + 1}/{len(images)}...")
                 text = ocr_image(image)
                 if text:
                     page_texts.append(text)
@@ -140,10 +150,12 @@ async def ocr_endpoint(file: UploadFile = File(...)):
             full_text = ocr_image(image)
             num_pages = 1
 
-        logger.info(f"OCR completato: {len(full_text)} caratteri estratti")
+        logger.info(f"✅ OCR completato: {len(full_text)} caratteri estratti")
 
         return JSONResponse(content={"text": full_text, "pages": num_pages})
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Errore OCR: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Errore OCR interno: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Errore interno durante l'elaborazione OCR")
