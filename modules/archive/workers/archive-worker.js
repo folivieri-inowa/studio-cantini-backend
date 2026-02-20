@@ -177,6 +177,9 @@ async function extractTextWithOCR(fileBuffer, filename = 'document.pdf') {
 
   // Per immagini: usa direttamente GOT-OCR
   if (!isPDF) {
+    if (!USE_GOT_OCR) {
+      throw new Error('GOT-OCR disabilitato: impossibile processare immagini senza vision model');
+    }
     console.log(`🖼️ File immagine rilevato, uso GOT-OCR...`);
     return extractTextWithGotOCR(fileBuffer, filename);
   }
@@ -196,17 +199,26 @@ async function extractTextWithOCR(fileBuffer, filename = 'document.pdf') {
           console.log(`✅ Docling OCR: ${text.length} caratteri estratti`);
           return text;
         }
-        // Se Docling restituisce poco testo, fallback a GOT-OCR
-        console.warn(`⚠️ Docling ha estratto poco testo (${text?.length || 0} chars), fallback a GOT-OCR...`);
-        return await extractTextWithGotOCR(fileBuffer, filename);
+        // Se Docling restituisce poco testo, fallback a GOT-OCR (se abilitato)
+        if (USE_GOT_OCR) {
+          console.warn(`⚠️ Docling ha estratto poco testo (${text?.length || 0} chars), fallback a GOT-OCR...`);
+          return await extractTextWithGotOCR(fileBuffer, filename);
+        }
+        throw new Error(`Docling ha estratto poco testo (${text?.length || 0} chars) e GOT-OCR è disabilitato`);
       } catch (error) {
-        console.error(`❌ Docling fallito: ${error.message}, fallback a GOT-OCR...`);
-        return await extractTextWithGotOCR(fileBuffer, filename);
+        if (USE_GOT_OCR) {
+          console.error(`❌ Docling fallito: ${error.message}, fallback a GOT-OCR...`);
+          return await extractTextWithGotOCR(fileBuffer, filename);
+        }
+        throw new Error(`Docling fallito: ${error.message}`);
       }
     } else {
-      // Docling disabilitato: usa GOT-OCR direttamente
-      console.log(`📄 Docling disabilitato, uso GOT-OCR...`);
-      return await extractTextWithGotOCR(fileBuffer, filename);
+      // Docling disabilitato: usa GOT-OCR se abilitato
+      if (USE_GOT_OCR) {
+        console.log(`📄 Docling disabilitato, uso GOT-OCR...`);
+        return await extractTextWithGotOCR(fileBuffer, filename);
+      }
+      throw new Error('Nessun motore OCR abilitato: Docling e GOT-OCR sono entrambi disabilitati');
     }
   }
 
@@ -975,7 +987,7 @@ async function handleOCRJob(job) {
     console.log(`📥 Downloading: ${document.storage_path}`);
     const fileBuffer = await downloadFile(document.storage_bucket, document.storage_path);
 
-    // Estrai testo con Docling (PDF nativo) o fallback LLaVA
+    // Estrai testo con Docling (PDF nativo) o fallback GOT-OCR
     const extractedText = await extractTextWithOCR(fileBuffer, document.original_filename);
 
     if (!extractedText || extractedText.trim().length === 0) {
