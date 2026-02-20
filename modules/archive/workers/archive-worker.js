@@ -27,13 +27,16 @@ const WORKER_ID = process.env.WORKER_ID || `archive-worker-${process.pid}`;
 const WORKER_TYPE = process.env.WORKER_TYPE || 'all'; // 'ocr', 'metadata', 'cleaning', 'embedding', 'all'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const EMBEDDING_MODEL = process.env.OLLAMA_EMBEDDING_MODEL || 'bge-m3:latest';
-const VISION_MODEL = process.env.OLLAMA_VISION_MODEL || 'openbmb/minicpm-o4.5:8b';
 const CLEANING_MODEL = process.env.OLLAMA_CLEANING_MODEL || 'mistral-nemo:latest';
 const METADATA_MODEL = process.env.OLLAMA_METADATA_MODEL || 'mistral-nemo:latest';
 
 // Docling OCR Configuration
 const DOCLING_URL = process.env.DOCLING_URL || 'http://localhost:5001';
 const USE_DOCLING_OCR = process.env.USE_DOCLING_OCR !== 'false'; // Default: true
+
+// GOT-OCR 2.0 Configuration
+const GOT_OCR_URL = process.env.GOT_OCR_URL || 'http://got-ocr:5002';
+const USE_GOT_OCR = process.env.USE_GOT_OCR !== 'false';
 
 // Qdrant Configuration
 const QDRANT_URL = process.env.QDRANT_URL || 'http://localhost:6333';
@@ -172,36 +175,38 @@ async function analyzePDFType(fileBuffer) {
 async function extractTextWithOCR(fileBuffer, filename = 'document.pdf') {
   const isPDF = filename.toLowerCase().endsWith('.pdf');
 
-  // Per immagini: usa direttamente Vision Model
+  // Per immagini: usa direttamente GOT-OCR
   if (!isPDF) {
-    console.log(`🖼️ File immagine rilevato, uso Vision Model (${VISION_MODEL})...`);
-    return extractTextWithVision(fileBuffer);
+    console.log(`🖼️ File immagine rilevato, uso GOT-OCR...`);
+    return extractTextWithGotOCR(fileBuffer, filename);
   }
 
   // Per PDF: analisi preventiva per scegliere il motore
   if (isPDF) {
     const pdfType = await analyzePDFType(fileBuffer);
 
-    if (pdfType === 'native' && USE_DOCLING_OCR) {
-      // PDF nativo: usa Docling per estrazione strutturata
-      console.log(`📄 PDF nativo rilevato, uso Docling per estrazione strutturata...`);
+    if (USE_DOCLING_OCR) {
+      // Usa sempre Docling per tutti i PDF (nativi e scannerizzati)
+      // Docling con do_ocr=true e Tesseract gestisce entrambi i casi
+      const typeLabel = pdfType === 'native' ? 'nativo' : 'scannerizzato';
+      console.log(`📄 PDF ${typeLabel} rilevato, uso Docling con OCR (Tesseract)...`);
       try {
         const text = await extractTextWithDocling(fileBuffer, filename);
         if (text && text.trim().length > 10) {
           console.log(`✅ Docling OCR: ${text.length} caratteri estratti`);
           return text;
         }
-        // Se Docling restituisce poco testo, fallback a Vision Model
-        console.warn(`⚠️ Docling ha estratto poco testo, fallback a Vision Model...`);
-        return await extractTextFromPDFWithVision(fileBuffer, filename);
+        // Se Docling restituisce poco testo, fallback a GOT-OCR
+        console.warn(`⚠️ Docling ha estratto poco testo (${text?.length || 0} chars), fallback a GOT-OCR...`);
+        return await extractTextWithGotOCR(fileBuffer, filename);
       } catch (error) {
-        console.error(`❌ Docling fallito: ${error.message}, fallback a Vision Model...`);
-        return await extractTextFromPDFWithVision(fileBuffer, filename);
+        console.error(`❌ Docling fallito: ${error.message}, fallback a GOT-OCR...`);
+        return await extractTextWithGotOCR(fileBuffer, filename);
       }
     } else {
-      // PDF scannerizzato: usa direttamente Vision Model
-      console.log(`📄 PDF scannerizzato rilevato, uso Vision Model (${VISION_MODEL})...`);
-      return await extractTextFromPDFWithVision(fileBuffer, filename);
+      // Docling disabilitato: usa GOT-OCR direttamente
+      console.log(`📄 Docling disabilitato, uso GOT-OCR...`);
+      return await extractTextWithGotOCR(fileBuffer, filename);
     }
   }
 
@@ -308,142 +313,68 @@ async function extractTextWithDocling(fileBuffer, filename = 'document.pdf') {
 }
 
 /**
- * Converte PDF in immagine usando Docling e estrae testo con Vision Model (MiniCPM-o, etc.)
- * Per PDF scannerizzati che Docling non riesce a processare
+ * Estrae testo da PDF/immagine usando GOT-OCR 2.0.
+ * Invia il file al microservizio got-ocr via multipart/form-data.
+ * Sostituisce llava:7b + pdftoppm come fallback per PDF scansionati.
  */
-async function extractTextFromPDFWithVision(fileBuffer, filename) {
-  console.log(`🖼️  Conversione PDF in immagine per OCR visivo...`);
+async function extractTextWithGotOCR(fileBuffer, filename = 'document.pdf') {
+  const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
+
+  const ext = filename.split('.').pop()?.toLowerCase();
+  const mimeTypes = {
+    'pdf': 'application/pdf',
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'tiff': 'image/tiff',
+    'tif': 'image/tiff',
+  };
+  const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+  const header = Buffer.from([
+    `--${boundary}`,
+    `Content-Disposition: form-data; name="file"; filename="${filename}"`,
+    `Content-Type: ${mimeType}`,
+    '',
+    ''
+  ].join('\r\n'));
+
+  const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+  const formData = Buffer.concat([header, fileBuffer, footer]);
+
+  console.log(`🔍 GOT-OCR: invio ${filename} (${fileBuffer.length} bytes)...`);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), DOC_PROCESSING_CONFIG.ollamaTimeoutMs);
 
   try {
-    // Usa Docling per convertire la prima pagina del PDF in immagine
-    const params = new URLSearchParams({
-      do_ocr: 'false', // Non fare OCR, solo conversione
-      do_table_structure: 'false',
-      image_resolution: '150', // Risoluzione moderata per velocità
-    });
-
-    const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
-    const header = Buffer.from([
-      `--${boundary}`,
-      `Content-Disposition: form-data; name="files"; filename="${filename}"`,
-      `Content-Type: application/pdf`,
-      '',
-      ''
-    ].join('\r\n'));
-    const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
-    const formData = Buffer.concat([header, fileBuffer, footer]);
-
-    const response = await fetch(`${DOCLING_URL}/v1/convert/file?${params.toString()}`, {
+    const response = await fetch(`${GOT_OCR_URL}/ocr`, {
       method: 'POST',
       body: formData,
       headers: {
         'Content-Type': `multipart/form-data; boundary=${boundary}`,
       },
-      timeout: 60000, // 1 minuto per conversione
-    });
-
-    if (!response.ok) {
-      throw new Error(`Docling conversion error: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    // Estrai l'immagine dalla risposta (Docling può restituire immagini delle pagine)
-    let imageBase64 = null;
-
-    // Cerca immagini nella risposta
-    if (data.document && data.document.pages) {
-      // Prendi la prima pagina come immagine
-      const firstPage = data.document.pages[0];
-      if (firstPage && firstPage.image) {
-        imageBase64 = firstPage.image;
-      }
-    }
-
-    // Se non troviamo l'immagine strutturata, cerchiamo nel markdown
-    if (!imageBase64 && data.document && data.document.md_content) {
-      const imgMatch = data.document.md_content.match(/!\[.*?\]\(data:image\/[^;]+;base64,([^)]+)\)/);
-      if (imgMatch) {
-        imageBase64 = imgMatch[1];
-      }
-    }
-
-    if (!imageBase64) {
-      throw new Error('Nessuna immagine estratta dal PDF');
-    }
-
-    console.log(`✅ PDF convertito in immagine, avvio OCR con ${VISION_MODEL}...`);
-
-    // Ora usa LLaVA per l'OCR sull'immagine
-    return await extractTextWithVision(Buffer.from(imageBase64, 'base64'));
-
-  } catch (error) {
-    console.error(`❌ Errore conversione PDF in immagine: ${error.message}`);
-    throw new Error(`Impossibile processare PDF scannerizzato: ${error.message}`);
-  }
-}
-
-/**
- * Estrae testo da immagine usando Ollama Vision Model (LLaVA, MiniCPM-o, Qwen-VL, etc.)
- * Ottimizzato per MiniCPM-o 4.5 e altri modelli vision-language moderni
- */
-async function extractTextWithVision(imageBuffer) {
-  const base64Image = imageBuffer.toString('base64');
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), DOC_PROCESSING_CONFIG.ollamaTimeoutMs);
-
-  // Prompt ottimizzato per MiniCPM-o e modelli simili
-  // MiniCPM-o 4.5 eccelle nell'estrazione strutturata di testo da documenti
-  const ocrPrompt = `You are a precise OCR engine. Extract ALL text from this document image.
-
-Requirements:
-1. Preserve the original layout and structure as much as possible
-2. Maintain table formatting (use markdown tables if applicable)
-3. Keep paragraph breaks and line breaks
-4. Preserve numbers, dates, and monetary amounts exactly as shown
-5. If the document contains forms, extract all fields and values
-6. Do NOT add any commentary or explanations
-7. Do NOT describe the image
-8. Return ONLY the extracted text
-
-Extract the text now:`;
-
-  try {
-    console.log(`🔍 OCR con ${VISION_MODEL}...`);
-
-    const response = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       signal: controller.signal,
-      body: JSON.stringify({
-        model: VISION_MODEL,
-        prompt: ocrPrompt,
-        images: [base64Image],
-        stream: false,
-        options: {
-          temperature: 0.1,  // Bassa temperatura per output deterministico
-          num_predict: 4096, // Massima lunghezza per documenti lunghi
-        },
-      }),
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.statusText}`);
+      const errorText = await response.text();
+      throw new Error(`GOT-OCR API error: ${response.status} ${errorText}`);
     }
 
     const data = await response.json();
-    const extractedText = data.response?.trim() || '';
+    const text = data.text?.trim() || '';
 
-    if (extractedText.length === 0) {
-      throw new Error('Nessun testo estratto dall immagine');
+    if (!text) {
+      throw new Error('GOT-OCR: nessun testo estratto');
     }
 
-    console.log(`✅ ${VISION_MODEL} OCR: ${extractedText.length} caratteri estratti`);
-    return extractedText;
+    console.log(`✅ GOT-OCR: ${text.length} caratteri estratti (${data.pages || 1} pagine)`);
+    return text;
+
   } catch (error) {
     if (error.name === 'AbortError') {
-      throw new Error(`Timeout: vision OCR ha impiegato più di ${DOC_PROCESSING_CONFIG.ollamaTimeoutMs / 1000}s`);
+      throw new Error(`Timeout: GOT-OCR ha impiegato più di ${DOC_PROCESSING_CONFIG.ollamaTimeoutMs / 1000}s`);
     }
     throw error;
   } finally {
@@ -1277,43 +1208,34 @@ async function initQdrantCollection() {
  * Aggiorna synced_to_qdrant=true e qdrant_id su archive_chunks.
  *
  * @param {string} documentId
+ * @param {Array} chunksWithEmbeddings - Array di { id, chunk_order, chunk_text, embedding }
  * @param {Object} meta - { db, folderPath, documentType }
  */
-async function upsertChunksToQdrant(documentId, meta) {
+async function upsertChunksToQdrant(documentId, chunksWithEmbeddings, meta) {
   const BATCH_SIZE = 100;
+
+  if (!chunksWithEmbeddings || chunksWithEmbeddings.length === 0) {
+    console.warn(`⚠️ Nessun chunk da sincronizzare per doc ${documentId}`);
+    return;
+  }
+
+  console.log(`📤 Qdrant upsert: ${chunksWithEmbeddings.length} chunks per doc ${documentId}`);
 
   const client = await pool.connect();
   try {
-    const { rows: dbChunks } = await client.query(
-      `SELECT id, chunk_index, chunk_text, embedding
-       FROM archive_chunks
-       WHERE document_id = $1
-         AND synced_to_qdrant = false
-         AND embedding IS NOT NULL
-       ORDER BY chunk_index`,
-      [documentId]
-    );
-
-    if (dbChunks.length === 0) {
-      console.warn(`⚠️ Nessun chunk da sincronizzare per doc ${documentId}`);
-      return;
-    }
-
-    console.log(`📤 Qdrant upsert: ${dbChunks.length} chunks per doc ${documentId}`);
-
-    for (let i = 0; i < dbChunks.length; i += BATCH_SIZE) {
-      const batch = dbChunks.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < chunksWithEmbeddings.length; i += BATCH_SIZE) {
+      const batch = chunksWithEmbeddings.slice(i, i + BATCH_SIZE);
 
       const points = batch.map(chunk => ({
         id: chunk.id,  // UUID del chunk — Qdrant accetta UUID come ID
-        vector: Array.isArray(chunk.embedding) ? chunk.embedding : JSON.parse(chunk.embedding),
+        vector: chunk.embedding,
         payload: {
           document_id: documentId,
           chunk_id: chunk.id,
           db: meta.db || null,
           folder_path: meta.folderPath || null,
           document_type: meta.documentType || null,
-          chunk_order: chunk.chunk_index,
+          chunk_order: chunk.chunk_order,
           text_preview: chunk.chunk_text ? chunk.chunk_text.substring(0, 200) : null,
         },
       }));
@@ -1325,7 +1247,7 @@ async function upsertChunksToQdrant(documentId, meta) {
       await client.query(
         `UPDATE archive_chunks
          SET synced_to_qdrant = true,
-             qdrant_id = id::text,
+             qdrant_id = id,
              updated_at = NOW()
          WHERE id = ANY($1)`,
         [batchIds]
@@ -1334,7 +1256,7 @@ async function upsertChunksToQdrant(documentId, meta) {
       console.log(`  ✅ Batch ${Math.floor(i / BATCH_SIZE) + 1}: ${batch.length} punti caricati su Qdrant`);
     }
 
-    console.log(`✅ Qdrant sync completato: ${dbChunks.length} chunks per doc ${documentId}`);
+    console.log(`✅ Qdrant sync completato: ${chunksWithEmbeddings.length} chunks per doc ${documentId}`);
   } finally {
     client.release();
   }
@@ -1357,33 +1279,45 @@ async function handleEmbeddingJob(job) {
 
     await documentRepo.updateProcessingStatus(document.id, 'embedding_in_progress');
 
+    // Elimina chunk esistenti (idempotenza per retry)
+    await chunkRepo.deleteByDocumentId(documentId);
+
     // Chunking
     console.log(`✂️  Chunking...`);
     const chunks = chunkText(document.cleaned_text);
     console.log(`📊 Creati ${chunks.length} chunks`);
 
-    // Genera embeddings e salva
+    // Genera embeddings, salva su Postgres e raccoglie i dati per Qdrant
+    const savedChunks = [];
     for (let i = 0; i < chunks.length; i++) {
-      const chunkText = chunks[i];
+      const text = chunks[i];
       console.log(`🔢 Embedding chunk ${i + 1}/${chunks.length}...`);
 
-      const embedding = await generateEmbedding(chunkText);
+      const embedding = await generateEmbedding(text);
 
-      await chunkRepo.createChunk({
+      const saved = await chunkRepo.createChunk({
         document_id: documentId,
         db,
         chunk_index: i,
-        chunk_text: chunkText,
+        chunk_text: text,
         embedding,
-        page_start: 1, // TODO: estrai da OCR
+        page_start: 1,
         page_end: 1,
+      });
+
+      // Mantieni il vettore in memoria per il successivo upsert su Qdrant
+      savedChunks.push({
+        id: saved.id,
+        chunk_order: i,
+        chunk_text: text,
+        embedding,
       });
     }
 
     await documentRepo.updateProcessingStatus(document.id, 'completed');
 
-    // Carica i chunk su Qdrant (il bug principale — era mancante!)
-    await upsertChunksToQdrant(documentId, {
+    // Carica i chunk su Qdrant passando direttamente i vettori (non rilegge da Postgres)
+    await upsertChunksToQdrant(documentId, savedChunks, {
       db,
       folderPath: document.folder_path || null,
       documentType: document.document_type || null,
