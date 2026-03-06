@@ -12,9 +12,16 @@
 TRUNCATE TABLE archive_documents CASCADE;
 
 -- 2. Pulisci la coda di pg-boss (jobs in coda per l'elaborazione)
--- Cancella tutti i jobs dalle tabelle di pg-boss
-DELETE FROM pgboss.job WHERE name LIKE 'archive-%';
-DELETE FROM pgboss.archive WHERE name LIKE 'archive-%';
+-- Cancella tutti i jobs dalle tabelle di pg-boss (solo se lo schema esiste)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'pgboss' AND table_name = 'job') THEN
+    DELETE FROM pgboss.job WHERE name LIKE 'archive-%';
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'pgboss' AND table_name = 'archive') THEN
+    DELETE FROM pgboss.archive WHERE name LIKE 'archive-%';
+  END IF;
+END $$;
 
 -- 3. Nota: I file fisici su MinIO/storage locale NON vengono eliminati da questa migration.
 --    Per eliminare anche i file fisici, è necessario farlo manualmente o via codice.
