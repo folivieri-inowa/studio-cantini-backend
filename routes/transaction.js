@@ -14,7 +14,7 @@ const transaction = async (fastify) => {
       SELECT
         t.id,
         to_char(t.date, 'YYYY-MM-DD') AS date,
-        t.amount,
+        t.amount::float AS amount,
         t.categoryId,
         t.subjectId,
         t.detailId,
