@@ -19,6 +19,9 @@
     "reconciliation": "node modules/archive/jobs/reconciliation.cron.js"
   },
   "private": true,
+  "overrides": {
+    "undici": "^6.24.0"
+  },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
     "@fastify/jwt": "^9.0.1",
