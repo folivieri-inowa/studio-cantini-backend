@@ -294,7 +294,8 @@ const report = async (fastify) => {
 
   fastify.get('/category/details', async (request, reply) => {
     try {
-      const { owner, category, year, db } = request.query;
+      const { owner, category, year, db, month } = request.query;
+      const selectedMonth = month ? parseInt(month, 10) : 12; // default: dicembre (anno intero)
 
       if (!owner || !category || !year || !db) {
         return reply.status(400).send({ error: 'Missing required parameters' });
@@ -629,12 +630,30 @@ const report = async (fastify) => {
           };
         });
 
+        // Calcola YTD per-soggetto sommando monthlyDetails da Gen a selectedMonth
+        let ytdIncome = 0;
+        let ytdExpense = 0;
+        let prevYtdIncome = 0;
+        let prevYtdExpense = 0;
+
+        for (let m = 1; m <= selectedMonth; m++) {
+          const md = subject.monthlyDetails[m] ?? { income: 0, expense: 0, prevIncome: 0, prevExpense: 0 };
+          ytdIncome += parseFloat(md.income ?? 0);
+          ytdExpense += parseFloat(md.expense ?? 0);
+          prevYtdIncome += parseFloat(md.prevIncome ?? 0);
+          prevYtdExpense += parseFloat(md.prevExpense ?? 0);
+        }
+
         report.averageMonthlyCosts.push({
           id: subject.id,
           category: subject.title,
           averageCost: averageCost.toFixed(2),
           totalExpense: totalExpenseCost,
           totalIncome: subject.totalIncome.toFixed(2),
+          ytdExpense: parseFloat(ytdExpense.toFixed(2)),
+          ytdIncome: parseFloat(ytdIncome.toFixed(2)),
+          prevYtdExpense: parseFloat(prevYtdExpense.toFixed(2)),
+          prevYtdIncome: parseFloat(prevYtdIncome.toFixed(2)),
           values: subject.values,
         });
 
