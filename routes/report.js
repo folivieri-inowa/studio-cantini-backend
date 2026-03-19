@@ -1079,101 +1079,105 @@ const report = async (fastify) => {
   });
 
   fastify.post('/category/month-breakdown', async (request, reply) => {
-  try {
-    const { db, owner, category, year, month } = request.body;
+    try {
+      const { db, owner, category, year, month } = request.body;
 
-    if (!db || !owner || !category || !year || !month) {
-      return reply.status(400).send({ error: 'Missing required parameters' });
-    }
-
-    const parsedYear = parseInt(year, 10);
-    const parsedMonth = parseInt(month, 10);
-
-    let rows;
-
-    if (owner === 'all-accounts') {
-      const result = await fastify.pg.query(`
-        SELECT
-          s.id AS subject_id, s.name AS subject_name,
-          d.id AS detail_id, d.name AS detail_name,
-          SUM(ABS(t.amount)) AS total
-        FROM transactions t
-        JOIN subjects s ON t.subjectid = s.id
-        JOIN details d ON t.detailid = d.id
-        JOIN owners o ON t.ownerid = o.id
-        WHERE t.db = $1
-          AND t.categoryid = $2
-          AND EXTRACT(YEAR FROM t.date) = $3
-          AND EXTRACT(MONTH FROM t.date) = $4
-          AND t.amount < 0
-          AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
-          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
-        GROUP BY s.id, s.name, d.id, d.name
-        ORDER BY SUM(ABS(t.amount)) DESC
-      `, [db, category, parsedYear, parsedMonth]);
-      rows = result.rows;
-    } else {
-      const result = await fastify.pg.query(`
-        SELECT
-          s.id AS subject_id, s.name AS subject_name,
-          d.id AS detail_id, d.name AS detail_name,
-          SUM(ABS(t.amount)) AS total
-        FROM transactions t
-        JOIN subjects s ON t.subjectid = s.id
-        JOIN details d ON t.detailid = d.id
-        WHERE t.db = $1
-          AND t.ownerid = $2
-          AND t.categoryid = $3
-          AND EXTRACT(YEAR FROM t.date) = $4
-          AND EXTRACT(MONTH FROM t.date) = $5
-          AND t.amount < 0
-          AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
-        GROUP BY s.id, s.name, d.id, d.name
-        ORDER BY SUM(ABS(t.amount)) DESC
-      `, [db, owner, category, parsedYear, parsedMonth]);
-      rows = result.rows;
-    }
-
-    // Group flat rows into subjects[].details[] structure
-    const subjectMap = new Map();
-    let grandTotal = 0;
-
-    rows.forEach(row => {
-      const amount = parseFloat(row.total);
-      grandTotal += amount;
-
-      if (!subjectMap.has(row.subject_id)) {
-        subjectMap.set(row.subject_id, {
-          id: row.subject_id,
-          name: row.subject_name,
-          total: 0,
-          details: [],
-        });
+      if (!db || !owner || !category || !year || !month) {
+        return reply.status(400).send({ error: 'Missing required parameters' });
       }
-      const subj = subjectMap.get(row.subject_id);
-      subj.total += amount;
-      subj.details.push({
-        id: row.detail_id,
-        name: row.detail_name,
-        total: amount,
+
+      const parsedYear = parseInt(year, 10);
+      const parsedMonth = parseInt(month, 10);
+
+      if (isNaN(parsedYear) || isNaN(parsedMonth)) {
+        return reply.status(400).send({ error: 'Invalid year or month' });
+      }
+
+      let rows;
+
+      if (owner === 'all-accounts') {
+        const result = await fastify.pg.query(`
+          SELECT
+            s.id AS subject_id, s.name AS subject_name,
+            d.id AS detail_id, d.name AS detail_name,
+            SUM(ABS(t.amount)) AS total
+          FROM transactions t
+          JOIN subjects s ON t.subjectid = s.id
+          JOIN details d ON t.detailid = d.id
+          JOIN owners o ON t.ownerid = o.id
+          WHERE t.db = $1
+            AND t.categoryid = $2
+            AND EXTRACT(YEAR FROM t.date) = $3
+            AND EXTRACT(MONTH FROM t.date) = $4
+            AND t.amount < 0
+            AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          GROUP BY s.id, s.name, d.id, d.name
+          ORDER BY SUM(ABS(t.amount)) DESC
+        `, [db, category, parsedYear, parsedMonth]);
+        rows = result.rows;
+      } else {
+        const result = await fastify.pg.query(`
+          SELECT
+            s.id AS subject_id, s.name AS subject_name,
+            d.id AS detail_id, d.name AS detail_name,
+            SUM(ABS(t.amount)) AS total
+          FROM transactions t
+          JOIN subjects s ON t.subjectid = s.id
+          JOIN details d ON t.detailid = d.id
+          WHERE t.db = $1
+            AND t.ownerid = $2
+            AND t.categoryid = $3
+            AND EXTRACT(YEAR FROM t.date) = $4
+            AND EXTRACT(MONTH FROM t.date) = $5
+            AND t.amount < 0
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          GROUP BY s.id, s.name, d.id, d.name
+          ORDER BY SUM(ABS(t.amount)) DESC
+        `, [db, owner, category, parsedYear, parsedMonth]);
+        rows = result.rows;
+      }
+
+      // Group flat rows into subjects[].details[] structure
+      const subjectMap = new Map();
+      let grandTotal = 0;
+
+      rows.forEach(row => {
+        const amount = parseFloat(row.total);
+        grandTotal += amount;
+
+        if (!subjectMap.has(row.subject_id)) {
+          subjectMap.set(row.subject_id, {
+            id: row.subject_id,
+            name: row.subject_name,
+            total: 0,
+            details: [],
+          });
+        }
+        const subj = subjectMap.get(row.subject_id);
+        subj.total += amount;
+        subj.details.push({
+          id: row.detail_id,
+          name: row.detail_name,
+          total: amount,
+        });
       });
-    });
 
-    const subjects = Array.from(subjectMap.values())
-      .map(s => ({ ...s, total: parseFloat(s.total.toFixed(2)) }))
-      .sort((a, b) => b.total - a.total);
+      const subjects = Array.from(subjectMap.values())
+        .map(s => ({ ...s, total: parseFloat(s.total.toFixed(2)) }))
+        .sort((a, b) => b.total - a.total);
 
-    reply.send({
-      month: parsedMonth,
-      year: parsedYear,
-      total: parseFloat(grandTotal.toFixed(2)),
-      subjects,
-    });
-  } catch (error) {
-    console.error('month-breakdown error:', error);
-    reply.status(500).send({ error: 'Internal Server Error' });
-  }
-});
+      reply.send({
+        month: parsedMonth,
+        year: parsedYear,
+        total: parseFloat(grandTotal.toFixed(2)),
+        subjects,
+      });
+    } catch (error) {
+      console.error('month-breakdown error:', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
 
   // Group Aggregation Endpoint - Consultative approach (in-memory aggregation)
   fastify.post('/group-aggregation', async (request, reply) => {
