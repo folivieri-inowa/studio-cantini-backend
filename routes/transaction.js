@@ -319,7 +319,7 @@ const transaction = async (fastify) => {
   });
 
   fastify.post('/filtered_list', { preHandler: fastify.authenticate }, async (request, reply) => {
-    const { db, owner, category, subject, details, year } = request.body;
+    const { db, owner, category, subject, details, year, month } = request.body;
 
     try {
       // Handle the special case for "all-accounts"
@@ -328,6 +328,16 @@ const transaction = async (fastify) => {
       // Gestione del caso 'all-years'
       const hasYearFilter = year && year !== 'all-years';
       const yearValue = hasYearFilter ? parseInt(year) : null;
+
+      // Gestione filtro YTD: da Gen a month (incluso)
+      const hasMonthFilter = hasYearFilter && month && month !== 12;
+      const monthValue = hasMonthFilter ? parseInt(month) : null;
+
+      // Calcola ultimo giorno del mese selezionato
+      const endDate = hasMonthFilter
+        ? new Date(yearValue, monthValue, 0).toISOString().split('T')[0] // ultimo giorno del mese
+        : null;
+      const startDate = hasMonthFilter ? `${yearValue}-01-01` : null;
 
       const query = `
         SELECT
@@ -351,16 +361,21 @@ const transaction = async (fastify) => {
           AND t.categoryId = ${isAllAccounts ? '$2' : '$3'}
           AND t.subjectId = ${isAllAccounts ? '$3' : '$4'}
           ${details ? `AND t.detailId = $${isAllAccounts ? '4' : '5'}` : ''}
-          ${hasYearFilter ? `AND EXTRACT(YEAR FROM t.date) = $${isAllAccounts ? (details ? '5' : '4') : (details ? '6' : '5')}` : ''}
+          ${hasMonthFilter
+            ? `AND t.date >= '${startDate}' AND t.date <= '${endDate}'`
+            : hasYearFilter
+              ? `AND EXTRACT(YEAR FROM t.date) = $${isAllAccounts ? (details ? '5' : '4') : (details ? '6' : '5')}`
+              : ''}
       `;
 
+      // Se hasMonthFilter, le date sono inline nella query → yearValue non va nei params
       const values = isAllAccounts
         ? (details
-            ? (hasYearFilter ? [db, category, subject, details, yearValue] : [db, category, subject, details])
-            : (hasYearFilter ? [db, category, subject, yearValue] : [db, category, subject]))
+            ? (hasMonthFilter ? [db, category, subject, details] : hasYearFilter ? [db, category, subject, details, yearValue] : [db, category, subject, details])
+            : (hasMonthFilter ? [db, category, subject] : hasYearFilter ? [db, category, subject, yearValue] : [db, category, subject]))
         : (details
-            ? (hasYearFilter ? [db, owner, category, subject, details, yearValue] : [db, owner, category, subject, details])
-            : (hasYearFilter ? [db, owner, category, subject, yearValue] : [db, owner, category, subject]));
+            ? (hasMonthFilter ? [db, owner, category, subject, details] : hasYearFilter ? [db, owner, category, subject, details, yearValue] : [db, owner, category, subject, details])
+            : (hasMonthFilter ? [db, owner, category, subject] : hasYearFilter ? [db, owner, category, subject, yearValue] : [db, owner, category, subject]));
 
       const { rows } = await fastify.pg.query(query, values);
 
