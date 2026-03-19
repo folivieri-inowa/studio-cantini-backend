@@ -1102,8 +1102,8 @@ const report = async (fastify) => {
             d.id AS detail_id, d.name AS detail_name,
             SUM(ABS(t.amount)) AS total
           FROM transactions t
-          JOIN subjects s ON t.subjectid = s.id
-          JOIN details d ON t.detailid = d.id
+          LEFT JOIN subjects s ON t.subjectid = s.id
+          LEFT JOIN details d ON t.detailid = d.id
           JOIN owners o ON t.ownerid = o.id
           WHERE t.db = $1
             AND t.categoryid = $2
@@ -1123,8 +1123,8 @@ const report = async (fastify) => {
             d.id AS detail_id, d.name AS detail_name,
             SUM(ABS(t.amount)) AS total
           FROM transactions t
-          JOIN subjects s ON t.subjectid = s.id
-          JOIN details d ON t.detailid = d.id
+          LEFT JOIN subjects s ON t.subjectid = s.id
+          LEFT JOIN details d ON t.detailid = d.id
           WHERE t.db = $1
             AND t.ownerid = $2
             AND t.categoryid = $3
@@ -1156,11 +1156,13 @@ const report = async (fastify) => {
         }
         const subj = subjectMap.get(row.subject_id);
         subj.total += amount;
-        subj.details.push({
-          id: row.detail_id,
-          name: row.detail_name,
-          total: amount,
-        });
+        if (row.detail_id) {
+          subj.details.push({
+            id: row.detail_id,
+            name: row.detail_name,
+            total: amount,
+          });
+        }
       });
 
       const subjects = Array.from(subjectMap.values())
