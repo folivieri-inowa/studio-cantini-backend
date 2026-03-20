@@ -333,11 +333,13 @@ const transaction = async (fastify) => {
       if (isAllAccounts) {
         query = `
           SELECT
+            t.id,
             to_char(t.date, 'YYYY-MM-DD') AS date,
             t.amount,
             o.name AS ownername,
             t.ownerid,
-            t.description
+            t.description,
+            t.excluded_from_stats
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
@@ -350,7 +352,6 @@ const transaction = async (fastify) => {
             AND EXTRACT(MONTH FROM t.date) = $5
             AND t.amount < 0
             AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
-            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
           ORDER BY t.date ASC
         `;
         values = detail
@@ -359,11 +360,13 @@ const transaction = async (fastify) => {
       } else {
         query = `
           SELECT
+            t.id,
             to_char(t.date, 'YYYY-MM-DD') AS date,
             t.amount,
             o.name AS ownername,
             t.ownerid,
-            t.description
+            t.description,
+            t.excluded_from_stats
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
@@ -376,7 +379,6 @@ const transaction = async (fastify) => {
             AND EXTRACT(YEAR FROM t.date) = $5
             AND EXTRACT(MONTH FROM t.date) = $6
             AND t.amount < 0
-            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
           ORDER BY t.date ASC
         `;
         values = detail
