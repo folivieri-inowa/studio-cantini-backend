@@ -42,6 +42,7 @@ import {
   SmartClassifierRoutes,
   ClassifierRoutes,
   ArchiveRoutes,
+  CategoryExclusionRoutes,
   // GroupsRoutes, // Disabled - using consultative approach in report.js
 } from './routes/index.js';
 // Migrazione database
@@ -95,6 +96,7 @@ fastify.register(ClassificationFeedbackRoutes, { prefix: '/v1/classification-fee
 fastify.register(SmartClassifierRoutes, { prefix: '/v1/transaction' })
 fastify.register(ClassifierRoutes, { prefix: '/v1/classification' })
 fastify.register(ArchiveRoutes, { prefix: '/v1/archive' })
+fastify.register(CategoryExclusionRoutes, { prefix: '/v1/category-exclusion' })
 // fastify.register(GroupsRoutes, { prefix: '/v1/groups' }) // Disabled - using consultative approach in report.js
 // fastify.register(SetupRoutes, { prefix: '/v1/setup' })
 // fastify.register(MLAnalysisRoutes, { prefix: '/v1/ml-analysis' })
