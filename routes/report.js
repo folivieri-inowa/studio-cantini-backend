@@ -1100,7 +1100,9 @@ const report = async (fastify) => {
           SELECT
             s.id AS subject_id, s.name AS subject_name,
             d.id AS detail_id, d.name AS detail_name,
-            SUM(ABS(t.amount)) AS total
+            SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) AS total,
+            COUNT(*) AS tx_count,
+            SUM(CASE WHEN t.excluded_from_stats = true THEN 1 ELSE 0 END) AS excluded_count
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
@@ -1111,9 +1113,8 @@ const report = async (fastify) => {
             AND EXTRACT(MONTH FROM t.date) = $4
             AND t.amount < 0
             AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
-            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
           GROUP BY s.id, s.name, d.id, d.name
-          ORDER BY SUM(ABS(t.amount)) DESC
+          ORDER BY SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) DESC
         `, [db, category, parsedYear, parsedMonth]);
         rows = result.rows;
       } else {
@@ -1121,7 +1122,9 @@ const report = async (fastify) => {
           SELECT
             s.id AS subject_id, s.name AS subject_name,
             d.id AS detail_id, d.name AS detail_name,
-            SUM(ABS(t.amount)) AS total
+            SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) AS total,
+            COUNT(*) AS tx_count,
+            SUM(CASE WHEN t.excluded_from_stats = true THEN 1 ELSE 0 END) AS excluded_count
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
@@ -1131,9 +1134,8 @@ const report = async (fastify) => {
             AND EXTRACT(YEAR FROM t.date) = $4
             AND EXTRACT(MONTH FROM t.date) = $5
             AND t.amount < 0
-            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
           GROUP BY s.id, s.name, d.id, d.name
-          ORDER BY SUM(ABS(t.amount)) DESC
+          ORDER BY SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) DESC
         `, [db, owner, category, parsedYear, parsedMonth]);
         rows = result.rows;
       }
@@ -1144,6 +1146,8 @@ const report = async (fastify) => {
 
       rows.forEach(row => {
         const amount = parseFloat(row.total);
+        const txCount = parseInt(row.tx_count, 10);
+        const excludedCount = parseInt(row.excluded_count, 10);
         grandTotal += amount;
 
         if (!subjectMap.has(row.subject_id)) {
@@ -1151,16 +1155,22 @@ const report = async (fastify) => {
             id: row.subject_id,
             name: row.subject_name,
             total: 0,
+            txCount: 0,
+            excludedCount: 0,
             details: [],
           });
         }
         const subj = subjectMap.get(row.subject_id);
         subj.total += amount;
+        subj.txCount += txCount;
+        subj.excludedCount += excludedCount;
         if (row.detail_id) {
           subj.details.push({
             id: row.detail_id,
             name: row.detail_name,
             total: amount,
+            txCount,
+            excludedCount,
           });
         }
       });
