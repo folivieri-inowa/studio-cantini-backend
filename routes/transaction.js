@@ -339,11 +339,16 @@ const transaction = async (fastify) => {
             o.name AS ownername,
             t.ownerid,
             t.description,
-            t.excluded_from_stats
+            t.excluded_from_stats,
+            CASE WHEN cte.transaction_id IS NOT NULL THEN true ELSE false END AS excluded_locally
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
           JOIN owners o ON t.ownerid = o.id
+          LEFT JOIN category_tx_exclusions cte
+            ON cte.transaction_id = t.id
+            AND cte.db = t.db
+            AND cte.category_id = $2
           WHERE t.db = $1
             AND t.categoryid = $2
             AND t.subjectid = $3
@@ -366,11 +371,16 @@ const transaction = async (fastify) => {
             o.name AS ownername,
             t.ownerid,
             t.description,
-            t.excluded_from_stats
+            t.excluded_from_stats,
+            CASE WHEN cte.transaction_id IS NOT NULL THEN true ELSE false END AS excluded_locally
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
           JOIN owners o ON t.ownerid = o.id
+          LEFT JOIN category_tx_exclusions cte
+            ON cte.transaction_id = t.id
+            AND cte.db = t.db
+            AND cte.category_id = $3
           WHERE t.db = $1
             AND t.ownerid = $2
             AND t.categoryid = $3
