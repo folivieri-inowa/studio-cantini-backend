@@ -319,7 +319,7 @@ const transaction = async (fastify) => {
   });
 
   fastify.post('/filtered_list', { preHandler: fastify.authenticate }, async (request, reply) => {
-    const { db, owner, category, subject, details, year, month } = request.body;
+    const { db, owner, category, subject, details, year, month, exactMonth } = request.body;
 
     try {
       // Handle the special case for "all-accounts"
@@ -329,15 +329,19 @@ const transaction = async (fastify) => {
       const hasYearFilter = year && year !== 'all-years';
       const yearValue = hasYearFilter ? parseInt(year) : null;
 
-      // Gestione filtro YTD: da Gen a month (incluso)
+      // Gestione filtro mese:
+      // - exactMonth=true → filtro sul singolo mese (es. solo Aprile)
+      // - exactMonth=false/undefined → filtro YTD da Gen a month (incluso)
       const hasMonthFilter = hasYearFilter && month && month !== 12;
       const monthValue = hasMonthFilter ? parseInt(month) : null;
 
-      // Calcola ultimo giorno del mese selezionato
+      // Calcola date di inizio e fine
+      const startDate = hasMonthFilter
+        ? (exactMonth ? `${yearValue}-${String(monthValue).padStart(2, '0')}-01` : `${yearValue}-01-01`)
+        : null;
       const endDate = hasMonthFilter
         ? new Date(yearValue, monthValue, 0).toISOString().split('T')[0] // ultimo giorno del mese
         : null;
-      const startDate = hasMonthFilter ? `${yearValue}-01-01` : null;
 
       const query = `
         SELECT
