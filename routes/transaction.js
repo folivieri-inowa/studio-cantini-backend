@@ -318,6 +318,80 @@ const transaction = async (fastify) => {
     }
   });
 
+  // Endpoint dedicato: movimenti di un singolo mese per soggetto/dettaglio
+  fastify.post('/month_transactions', { preHandler: fastify.authenticate }, async (request, reply) => {
+    const { db, owner, category, subject, detail, year, month } = request.body;
+
+    try {
+      const isAllAccounts = owner === 'all-accounts';
+      const yearValue = parseInt(year, 10);
+      const monthValue = parseInt(month, 10);
+
+      let query;
+      let values;
+
+      if (isAllAccounts) {
+        query = `
+          SELECT
+            to_char(t.date, 'YYYY-MM-DD') AS date,
+            t.amount,
+            o.name AS ownername,
+            t.ownerid,
+            t.description
+          FROM transactions t
+          LEFT JOIN subjects s ON t.subjectid = s.id
+          LEFT JOIN details d ON t.detailid = d.id
+          JOIN owners o ON t.ownerid = o.id
+          WHERE t.db = $1
+            AND t.categoryid = $2
+            AND t.subjectid = $3
+            ${detail ? 'AND t.detailid = $6' : ''}
+            AND EXTRACT(YEAR FROM t.date) = $4
+            AND EXTRACT(MONTH FROM t.date) = $5
+            AND t.amount < 0
+            AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          ORDER BY t.date ASC
+        `;
+        values = detail
+          ? [db, category, subject, yearValue, monthValue, detail]
+          : [db, category, subject, yearValue, monthValue];
+      } else {
+        query = `
+          SELECT
+            to_char(t.date, 'YYYY-MM-DD') AS date,
+            t.amount,
+            o.name AS ownername,
+            t.ownerid,
+            t.description
+          FROM transactions t
+          LEFT JOIN subjects s ON t.subjectid = s.id
+          LEFT JOIN details d ON t.detailid = d.id
+          JOIN owners o ON t.ownerid = o.id
+          WHERE t.db = $1
+            AND t.ownerid = $2
+            AND t.categoryid = $3
+            AND t.subjectid = $4
+            ${detail ? 'AND t.detailid = $7' : ''}
+            AND EXTRACT(YEAR FROM t.date) = $5
+            AND EXTRACT(MONTH FROM t.date) = $6
+            AND t.amount < 0
+            AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          ORDER BY t.date ASC
+        `;
+        values = detail
+          ? [db, owner, category, subject, yearValue, monthValue, detail]
+          : [db, owner, category, subject, yearValue, monthValue];
+      }
+
+      const { rows } = await fastify.pg.query(query, values);
+      reply.send({ data: { data: rows } });
+    } catch (error) {
+      console.error('Error fetching month_transactions', error);
+      reply.status(500).send({ error: 'Failed to fetch month transactions' });
+    }
+  });
+
   fastify.post('/filtered_list', { preHandler: fastify.authenticate }, async (request, reply) => {
     const { db, owner, category, subject, details, year, month, exactMonth } = request.body;
 
