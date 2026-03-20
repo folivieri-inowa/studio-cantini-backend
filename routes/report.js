@@ -674,7 +674,24 @@ const report = async (fastify) => {
           value: subject.totalExpense,
         });
       });
-      reply.send(report);
+
+      // Conta esclusioni locali per mese (category_tx_exclusions)
+      const { rows: exclusionRows } = await fastify.pg.query(`
+        SELECT EXTRACT(MONTH FROM t.date)::int AS month, COUNT(*)::int AS count
+        FROM category_tx_exclusions cte
+        JOIN transactions t ON t.id = cte.transaction_id AND t.db = cte.db
+        WHERE cte.db = $1
+          AND cte.category_id = $2
+          AND EXTRACT(YEAR FROM t.date) = $3
+        GROUP BY EXTRACT(MONTH FROM t.date)
+      `, [db, category, currentYear]);
+
+      const localExclusionsPerMonth = {};
+      exclusionRows.forEach(row => {
+        localExclusionsPerMonth[row.month] = row.count;
+      });
+
+      reply.send({ ...report, localExclusionsPerMonth });
     } catch (error) {
       console.error(error);
       reply.status(500).send({ error: 'Internal Server Error' });
