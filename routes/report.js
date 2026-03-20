@@ -1100,13 +1100,17 @@ const report = async (fastify) => {
           SELECT
             s.id AS subject_id, s.name AS subject_name,
             d.id AS detail_id, d.name AS detail_name,
-            SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) AS total,
+            SUM(CASE WHEN cte.transaction_id IS NULL THEN ABS(t.amount) ELSE 0 END) AS total,
             COUNT(*) AS tx_count,
-            SUM(CASE WHEN t.excluded_from_stats = true THEN 1 ELSE 0 END) AS excluded_count
+            SUM(CASE WHEN cte.transaction_id IS NOT NULL THEN 1 ELSE 0 END) AS excluded_count
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
           JOIN owners o ON t.ownerid = o.id
+          LEFT JOIN category_tx_exclusions cte
+            ON cte.transaction_id = t.id
+            AND cte.db = t.db
+            AND cte.category_id = $2
           WHERE t.db = $1
             AND t.categoryid = $2
             AND EXTRACT(YEAR FROM t.date) = $3
@@ -1114,7 +1118,7 @@ const report = async (fastify) => {
             AND t.amount < 0
             AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
           GROUP BY s.id, s.name, d.id, d.name
-          ORDER BY SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) DESC
+          ORDER BY SUM(CASE WHEN cte.transaction_id IS NULL THEN ABS(t.amount) ELSE 0 END) DESC
         `, [db, category, parsedYear, parsedMonth]);
         rows = result.rows;
       } else {
@@ -1122,12 +1126,16 @@ const report = async (fastify) => {
           SELECT
             s.id AS subject_id, s.name AS subject_name,
             d.id AS detail_id, d.name AS detail_name,
-            SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) AS total,
+            SUM(CASE WHEN cte.transaction_id IS NULL THEN ABS(t.amount) ELSE 0 END) AS total,
             COUNT(*) AS tx_count,
-            SUM(CASE WHEN t.excluded_from_stats = true THEN 1 ELSE 0 END) AS excluded_count
+            SUM(CASE WHEN cte.transaction_id IS NOT NULL THEN 1 ELSE 0 END) AS excluded_count
           FROM transactions t
           LEFT JOIN subjects s ON t.subjectid = s.id
           LEFT JOIN details d ON t.detailid = d.id
+          LEFT JOIN category_tx_exclusions cte
+            ON cte.transaction_id = t.id
+            AND cte.db = t.db
+            AND cte.category_id = $3
           WHERE t.db = $1
             AND t.ownerid = $2
             AND t.categoryid = $3
@@ -1135,7 +1143,7 @@ const report = async (fastify) => {
             AND EXTRACT(MONTH FROM t.date) = $5
             AND t.amount < 0
           GROUP BY s.id, s.name, d.id, d.name
-          ORDER BY SUM(CASE WHEN (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false) THEN ABS(t.amount) ELSE 0 END) DESC
+          ORDER BY SUM(CASE WHEN cte.transaction_id IS NULL THEN ABS(t.amount) ELSE 0 END) DESC
         `, [db, owner, category, parsedYear, parsedMonth]);
         rows = result.rows;
       }
