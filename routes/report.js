@@ -343,7 +343,7 @@ const report = async (fastify) => {
         // Get all transactions for the specified category across all owners in this db
         // Escludendo le carte di credito per "tutti i conti"
         const { rows: allTransactions } = await fastify.pg.query(`
-        SELECT 
+        SELECT
           t.id,
           to_char(t.date, 'YYYY-MM-DD') AS date,
           t.amount,
@@ -354,21 +354,27 @@ const report = async (fastify) => {
           t.ownerid,
           o.name AS owner_name,
           o.cc AS owner_cc
-        FROM 
+        FROM
           transactions t
-        LEFT JOIN 
+        LEFT JOIN
           subjects s ON t.subjectid = s.id
-        LEFT JOIN 
+        LEFT JOIN
           details d ON t.detailid = d.id
         LEFT JOIN
           owners o ON t.ownerid = o.id
-        WHERE 
+        LEFT JOIN
+          category_tx_exclusions cte
+            ON cte.transaction_id = t.id
+            AND cte.db = t.db
+            AND cte.category_id = $2
+        WHERE
           t.db = $1
           AND t.categoryid = $2
           AND t.date >= $3
           AND t.date <= $4
           AND (o.is_credit_card = false OR o.is_credit_card IS NULL)
           AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          AND cte.transaction_id IS NULL
         `, [db, category, prevStartDate, endDate]);
 
         transactions = allTransactions;
@@ -387,7 +393,7 @@ const report = async (fastify) => {
 
         // Get all transactions for the specified category and owner
         const { rows: ownerTransactions } = await fastify.pg.query(`
-        SELECT 
+        SELECT
           t.id,
           to_char(t.date, 'YYYY-MM-DD') AS date,
           t.amount,
@@ -395,19 +401,25 @@ const report = async (fastify) => {
           s.name AS subject_name,
           t.detailid,
           d.name AS detail_name
-        FROM 
+        FROM
           transactions t
-        LEFT JOIN 
+        LEFT JOIN
           subjects s ON t.subjectid = s.id
-        LEFT JOIN 
+        LEFT JOIN
           details d ON t.detailid = d.id
-        WHERE 
+        LEFT JOIN
+          category_tx_exclusions cte
+            ON cte.transaction_id = t.id
+            AND cte.db = t.db
+            AND cte.category_id = $3
+        WHERE
           t.db = $1
           AND t.ownerid = $2
           AND t.categoryid = $3
           AND t.date >= $4
           AND t.date <= $5
           AND (t.excluded_from_stats IS NULL OR t.excluded_from_stats = false)
+          AND cte.transaction_id IS NULL
         `, [db, owner, category, prevStartDate, endDate]);
 
         transactions = ownerTransactions;
