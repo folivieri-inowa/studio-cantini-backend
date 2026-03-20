@@ -58,6 +58,52 @@ const categoryExclusion = async (fastify) => {
     }
   });
 
+  // Ripristina tutte le esclusioni per un soggetto (e opzionalmente dettaglio) in un mese
+  fastify.post('/reset', { preHandler: fastify.authenticate }, async (request, reply) => {
+    try {
+      const { db, categoryId, subjectId, detailId, year, month } = request.body;
+
+      if (!db || !categoryId || !subjectId || !year || !month) {
+        return reply.status(400).send({ error: 'Missing required parameters' });
+      }
+
+      // DELETE tutte le esclusioni per le transazioni del soggetto (e dettaglio) nel mese
+      if (detailId) {
+        await fastify.pg.query(`
+          DELETE FROM category_tx_exclusions
+          WHERE db = $1
+            AND category_id = $2
+            AND transaction_id IN (
+              SELECT t.id FROM transactions t
+              WHERE t.db = $1
+                AND t.subjectid = $3
+                AND t.detailid = $4
+                AND EXTRACT(YEAR FROM t.date) = $5
+                AND EXTRACT(MONTH FROM t.date) = $6
+            )
+        `, [db, categoryId, subjectId, detailId, parseInt(year, 10), parseInt(month, 10)]);
+      } else {
+        await fastify.pg.query(`
+          DELETE FROM category_tx_exclusions
+          WHERE db = $1
+            AND category_id = $2
+            AND transaction_id IN (
+              SELECT t.id FROM transactions t
+              WHERE t.db = $1
+                AND t.subjectid = $3
+                AND EXTRACT(YEAR FROM t.date) = $4
+                AND EXTRACT(MONTH FROM t.date) = $5
+            )
+        `, [db, categoryId, subjectId, parseInt(year, 10), parseInt(month, 10)]);
+      }
+
+      reply.send({ success: true });
+    } catch (error) {
+      console.error('Error resetting category exclusions:', error);
+      reply.status(500).send({ error: 'Internal Server Error' });
+    }
+  });
+
 };
 
 export default categoryExclusion;
