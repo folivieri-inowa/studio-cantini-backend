@@ -446,6 +446,8 @@ const report = async (fastify) => {
         report.monthlyTotals[month] = { income: 0, expense: 0, prevIncome: 0, prevExpense: 0 };
       }
 
+      const detailMonthlyMap = {}; // { detailId: { [month]: { income, expense, prevIncome, prevExpense } } }
+
       // Process transactions
       transactions.forEach(tx => {
         const txDate = new Date(tx.date);
@@ -526,7 +528,29 @@ const report = async (fastify) => {
           // Add detail to values if not already present
           if (tx.detailid) {
             const detailId = tx.detailid;
-            
+
+            if (!detailMonthlyMap[detailId]) {
+              detailMonthlyMap[detailId] = {};
+              for (let dm = 1; dm <= 12; dm++) {
+                detailMonthlyMap[detailId][dm] = { income: 0, expense: 0, prevIncome: 0, prevExpense: 0 };
+              }
+            }
+            if (amount > 0) {
+              const amountRounded = parseFloat(amount.toFixed(2));
+              if (isPrevYear) {
+                detailMonthlyMap[detailId][month].prevIncome += amountRounded;
+              } else {
+                detailMonthlyMap[detailId][month].income += amountRounded;
+              }
+            } else {
+              const absAmount = parseFloat(Math.abs(amount).toFixed(2));
+              if (isPrevYear) {
+                detailMonthlyMap[detailId][month].prevExpense += absAmount;
+              } else {
+                detailMonthlyMap[detailId][month].expense += absAmount;
+              }
+            }
+
             // Aggiungiamo il dettaglio solo se:
             // 1. Non è già presente nella lista
             // 2. È dell'anno corrente (non dell'anno precedente)
@@ -634,11 +658,32 @@ const report = async (fastify) => {
           // Arrotondiamo per maggiore precisione
           const avgCost = totalExpense > 0 ? parseFloat((totalExpense / 12).toFixed(2)) : 0;
 
+          // Calcola YTD per questo dettaglio
+          let detYtdIncome = 0;
+          let detYtdExpense = 0;
+          let detPrevYtdIncome = 0;
+          let detPrevYtdExpense = 0;
+
+          const detMap = detailMonthlyMap[value.id];
+          if (detMap) {
+            for (let m = 1; m <= selectedMonth; m++) {
+              const dm = detMap[m] ?? { income: 0, expense: 0, prevIncome: 0, prevExpense: 0 };
+              detYtdIncome      += parseFloat(dm.income ?? 0);
+              detYtdExpense     += parseFloat(dm.expense ?? 0);
+              detPrevYtdIncome  += parseFloat(dm.prevIncome ?? 0);
+              detPrevYtdExpense += parseFloat(dm.prevExpense ?? 0);
+            }
+          }
+
           return {
             ...value,
             averageCost: avgCost.toFixed(2),
             totalExpense: totalExpense.toFixed(2),
             totalIncome: totalIncome.toFixed(2),
+            ytdExpense:     parseFloat(detYtdExpense.toFixed(2)),
+            ytdIncome:      parseFloat(detYtdIncome.toFixed(2)),
+            prevYtdExpense: parseFloat(detPrevYtdExpense.toFixed(2)),
+            prevYtdIncome:  parseFloat(detPrevYtdIncome.toFixed(2)),
           };
         });
 
