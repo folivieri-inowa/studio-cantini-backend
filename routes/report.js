@@ -296,6 +296,9 @@ const report = async (fastify) => {
     try {
       const { owner, category, year, db, month } = request.query;
       const selectedMonth = month ? parseInt(month, 10) : 12; // default: dicembre (anno intero)
+      const safeSelectedMonth = (Number.isInteger(selectedMonth) && selectedMonth >= 1 && selectedMonth <= 12)
+        ? selectedMonth
+        : 12;
 
       if (!owner || !category || !year || !db) {
         return reply.status(400).send({ error: 'Missing required parameters' });
@@ -525,6 +528,9 @@ const report = async (fastify) => {
 
           report.subcategories[subjectId].transactionCount++;
 
+          // I dettagli vengono indicizzati solo se la transazione ha un subjectid (assunzione di business:
+          // i dettagli sono sempre associati a un soggetto). Transazioni con detailid ma senza subjectid
+          // non contribuiscono ai totali YTD per dettaglio — comportamento intenzionale.
           // Add detail to values if not already present
           if (tx.detailid) {
             const detailId = tx.detailid;
@@ -666,7 +672,7 @@ const report = async (fastify) => {
 
           const detMap = detailMonthlyMap[value.id];
           if (detMap) {
-            for (let m = 1; m <= selectedMonth; m++) {
+            for (let m = 1; m <= safeSelectedMonth; m++) {
               const dm = detMap[m] ?? { income: 0, expense: 0, prevIncome: 0, prevExpense: 0 };
               detYtdIncome      += parseFloat(dm.income ?? 0);
               detYtdExpense     += parseFloat(dm.expense ?? 0);
@@ -693,7 +699,7 @@ const report = async (fastify) => {
         let prevYtdIncome = 0;
         let prevYtdExpense = 0;
 
-        for (let m = 1; m <= selectedMonth; m++) {
+        for (let m = 1; m <= safeSelectedMonth; m++) {
           const md = subject.monthlyDetails[m] ?? { income: 0, expense: 0, prevIncome: 0, prevExpense: 0 };
           ytdIncome += parseFloat(md.income ?? 0);
           ytdExpense += parseFloat(md.expense ?? 0);
