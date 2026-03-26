@@ -615,8 +615,19 @@ const report = async (fastify) => {
         const totalExpenseCost = totalExpense.toFixed(2);
 
         // Process details (values)
-        // Filtriamo i dettagli per includere solo quelli con transazioni nell'anno corrente
-        const filteredValues = subject.values.filter(value => value.hasCurrentYearTransactions === true);
+        // Includiamo i dettagli con transazioni nell'anno corrente O con importi nell'anno precedente
+        // (es. un fornitore presente solo nel prev year deve comunque comparire per confronto)
+        const filteredValues = subject.values.filter(value => {
+          if (value.hasCurrentYearTransactions === true) return true;
+          // Controlla se ha importi nel prev year (entro selectedMonth)
+          const detMap = detailMonthlyMap[value.id];
+          if (!detMap) return false;
+          for (let m = 1; m <= safeSelectedMonth; m++) {
+            const dm = detMap[m];
+            if (dm && (parseFloat(dm.prevExpense ?? 0) !== 0 || parseFloat(dm.prevIncome ?? 0) !== 0)) return true;
+          }
+          return false;
+        });
         
         // Aggiorniamo i values con i dettagli filtrati e calcolati
         subject.values = filteredValues.map(value => {
