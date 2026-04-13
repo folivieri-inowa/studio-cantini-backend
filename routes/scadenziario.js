@@ -611,4 +611,96 @@ export default async function scadenziarioRoutes(fastify, options) {
       });
     }
   });
+
+  // Endpoint per ottenere i gruppi di rate di un owner
+  fastify.post('/groups', { preHandler }, async (request, reply) => {
+    try {
+      const { db, owner_id } = request.body;
+      const client = await fastify.pg.pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT * FROM scadenziario_groups WHERE owner_id = $1 ORDER BY created_at DESC`,
+          [owner_id]
+        );
+        reply.send({ data: result.rows });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('Errore durante il recupero dei gruppi:', error);
+      reply.status(500).send({ error: 'Errore durante il recupero dei gruppi', message: error.message });
+    }
+  });
+
+  // Endpoint per creare un gruppo + N rate in una transazione
+  fastify.post('/create-group', { preHandler }, async (request, reply) => {
+    try {
+      const { db, group, installments: installmentList } = request.body;
+      const client = await fastify.pg.pool.connect();
+      try {
+        await client.query('BEGIN');
+
+        const groupResult = await client.query(
+          `INSERT INTO scadenziario_groups (name, type, total_amount, installments, frequency, start_date, owner_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+          [group.name, group.type, group.total_amount, group.installments, group.frequency, group.start_date, group.owner_id]
+        );
+        const groupId = groupResult.rows[0].id;
+
+        const inserted = [];
+        for (const inst of installmentList) {
+          const r = await client.query(
+            `INSERT INTO scadenziario (subject, description, date, amount, status, owner_id, type, group_id, alert_days)
+             VALUES ($1,$2,$3,$4,$5,$6,'rata',$7,$8) RETURNING *`,
+            [inst.subject, inst.description || null, inst.date, inst.amount, inst.status || 'future', group.owner_id, groupId, group.alert_days || 15]
+          );
+          inserted.push(r.rows[0]);
+        }
+
+        await client.query('COMMIT');
+        reply.send({ data: { group: groupResult.rows[0], installments: inserted }, success: true });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('Errore durante la creazione del gruppo:', error);
+      reply.status(500).send({ error: 'Errore durante la creazione del gruppo', message: error.message });
+    }
+  });
+
+  // Endpoint per eliminare un gruppo (solo rate non pagate)
+  fastify.post('/delete-group', { preHandler }, async (request, reply) => {
+    try {
+      const { db, group_id } = request.body;
+      const client = await fastify.pg.pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `DELETE FROM scadenziario WHERE group_id = $1 AND status != 'completed'`,
+          [group_id]
+        );
+        // Elimina il gruppo solo se non rimangono rate
+        const remaining = await client.query(
+          `SELECT COUNT(*) FROM scadenziario WHERE group_id = $1`,
+          [group_id]
+        );
+        if (parseInt(remaining.rows[0].count, 10) === 0) {
+          await client.query(`DELETE FROM scadenziario_groups WHERE id = $1`, [group_id]);
+        }
+        await client.query('COMMIT');
+        reply.send({ success: true });
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('Errore durante l\'eliminazione del gruppo:', error);
+      reply.status(500).send({ error: 'Errore durante l\'eliminazione del gruppo', message: error.message });
+    }
+  });
 };
