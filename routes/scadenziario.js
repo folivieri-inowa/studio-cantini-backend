@@ -10,7 +10,7 @@ export default async function scadenziarioRoutes(fastify, options) {
 
       // Costruzione della query di base
       let queryText = `
-        SELECT 
+        SELECT
           s.id,
           s.subject,
           s.description,
@@ -20,12 +20,16 @@ export default async function scadenziarioRoutes(fastify, options) {
           to_char(s.payment_date, 'YYYY-MM-DD') AS payment_date,
           s.status,
           o.name as owner_name,
-          o.id as owner_id
-        FROM 
+          o.id as owner_id,
+          s.type, s.alert_days, s.invoice_number,
+          to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
+          s.company_name, s.vat_number, s.iban, s.bank_name,
+          s.payment_terms, s.attachment_url, s.group_id
+        FROM
           scadenziario s
         LEFT JOIN
           owners o ON s.owner_id = o.id
-        WHERE 
+        WHERE
           1=1
       `;
       
@@ -60,6 +64,12 @@ export default async function scadenziarioRoutes(fastify, options) {
         queryText += ` AND s.owner_id = $${queryParams.length}`;
       }
 
+      // Filtro per tipo
+      if (filters.type) {
+        queryParams.push(filters.type);
+        queryText += ` AND s.type = $${queryParams.length}`;
+      }
+
       // Ordinamento e limite
       queryText += ` ORDER BY s.date ASC`;
       
@@ -90,7 +100,7 @@ export default async function scadenziarioRoutes(fastify, options) {
       }
 
       const queryText = `
-        SELECT 
+        SELECT
           s.id,
           s.subject,
           s.description,
@@ -100,12 +110,16 @@ export default async function scadenziarioRoutes(fastify, options) {
           to_char(s.payment_date, 'YYYY-MM-DD') AS payment_date,
           s.status,
           o.name as owner_name,
-          o.id as owner_id
-        FROM 
+          o.id as owner_id,
+          s.type, s.alert_days, s.invoice_number,
+          to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
+          s.company_name, s.vat_number, s.iban, s.bank_name,
+          s.payment_terms, s.attachment_url, s.group_id
+        FROM
           scadenziario s
         LEFT JOIN
           owners o ON s.owner_id = o.id
-        WHERE 
+        WHERE
           s.id = $1
       `;
       
@@ -139,52 +153,81 @@ export default async function scadenziarioRoutes(fastify, options) {
         return reply.status(400).send({ error: 'Dati della scadenza non specificati' });
       }
 
-      const { 
-        subject, 
-        description, 
-        causale, 
-        date, 
-        amount, 
-        payment_date, 
-        status, 
-        owner_id 
+      const {
+        subject,
+        description,
+        causale,
+        date,
+        amount,
+        payment_date,
+        status,
+        owner_id,
+        // nuovi campi
+        type,
+        alert_days,
+        invoice_number,
+        invoice_date,
+        company_name,
+        vat_number,
+        iban,
+        bank_name,
+        payment_terms,
+        attachment_url,
+        group_id,
       } = scadenza;
-      
+
       // Verifica dei campi obbligatori
       if (!subject || !date || amount === undefined || !status) {
-        return reply.status(400).send({ 
-          error: 'Campi obbligatori mancanti', 
-          message: 'I campi soggetto, data, importo e stato sono obbligatori' 
+        return reply.status(400).send({
+          error: 'Campi obbligatori mancanti',
+          message: 'I campi soggetto, data, importo e stato sono obbligatori'
         });
       }
 
       const queryText = `
-        INSERT INTO scadenziario 
-          (subject, description, causale, date, amount, payment_date, status, owner_id)
+        INSERT INTO scadenziario
+          (subject, description, causale, date, amount, payment_date, status, owner_id,
+           type, alert_days, invoice_number, invoice_date, company_name, vat_number,
+           iban, bank_name, payment_terms, attachment_url, group_id)
         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING 
-          id, 
-          subject, 
-          description, 
-          causale, 
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+        RETURNING
+          id,
+          subject,
+          description,
+          causale,
           to_char(date, 'YYYY-MM-DD') AS date,
           amount,
           to_char(payment_date, 'YYYY-MM-DD') AS payment_date,
-          status
+          status,
+          type, alert_days, invoice_number,
+          to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
+          company_name, vat_number, iban, bank_name,
+          payment_terms, attachment_url, group_id
       `;
-      
+
       const client = await fastify.pg.pool.connect();
       try {
         const result = await client.query(queryText, [
-          subject, 
-          description || null, 
-          causale || null, 
-          date, 
-          amount, 
-          payment_date || null, 
-          status, 
-          owner_id || null
+          subject,
+          description || null,
+          causale || null,
+          date,
+          amount,
+          payment_date || null,
+          status,
+          owner_id || null,
+          type || 'altro',
+          alert_days || 15,
+          invoice_number || null,
+          invoice_date || null,
+          company_name || null,
+          vat_number || null,
+          iban || null,
+          bank_name || null,
+          payment_terms ? JSON.stringify(payment_terms) : null,
+          attachment_url || null,
+          group_id || null,
         ]);
         
         reply.send({ data: result.rows[0], success: true });
@@ -209,60 +252,127 @@ export default async function scadenziarioRoutes(fastify, options) {
         return reply.status(400).send({ error: 'ID o dati della scadenza non specificati' });
       }
 
-      const { 
-        subject, 
-        description, 
-        causale, 
-        date, 
-        amount, 
-        payment_date, 
-        status, 
-        owner_id 
+      const {
+        subject,
+        description,
+        causale,
+        date,
+        amount,
+        payment_date,
+        status,
+        owner_id,
+        // nuovi campi
+        type,
+        alert_days,
+        invoice_number,
+        invoice_date,
+        company_name,
+        vat_number,
+        iban,
+        bank_name,
+        payment_terms,
+        attachment_url,
+        group_id,
       } = scadenza;
-      
+
       // Costruzione della query di aggiornamento
       let updateFields = [];
       const queryParams = [id]; // Primo parametro è sempre l'ID
       let paramIndex = 2; // Inizia da 2 perché l'ID è $1
-      
+
       if (subject !== undefined) {
         updateFields.push(`subject = $${paramIndex++}`);
         queryParams.push(subject);
       }
-      
+
       if (description !== undefined) {
         updateFields.push(`description = $${paramIndex++}`);
         queryParams.push(description);
       }
-      
+
       if (causale !== undefined) {
         updateFields.push(`causale = $${paramIndex++}`);
         queryParams.push(causale);
       }
-      
+
       if (date !== undefined) {
         updateFields.push(`date = $${paramIndex++}`);
         queryParams.push(date);
       }
-      
+
       if (amount !== undefined) {
         updateFields.push(`amount = $${paramIndex++}`);
         queryParams.push(amount);
       }
-      
+
       if (payment_date !== undefined) {
         updateFields.push(`payment_date = $${paramIndex++}`);
         queryParams.push(payment_date);
       }
-      
+
       if (status !== undefined) {
         updateFields.push(`status = $${paramIndex++}`);
         queryParams.push(status);
       }
-      
+
       if (owner_id !== undefined) {
         updateFields.push(`owner_id = $${paramIndex++}`);
         queryParams.push(owner_id);
+      }
+
+      if (type !== undefined) {
+        updateFields.push(`type = $${paramIndex++}`);
+        queryParams.push(type);
+      }
+
+      if (alert_days !== undefined) {
+        updateFields.push(`alert_days = $${paramIndex++}`);
+        queryParams.push(alert_days);
+      }
+
+      if (invoice_number !== undefined) {
+        updateFields.push(`invoice_number = $${paramIndex++}`);
+        queryParams.push(invoice_number);
+      }
+
+      if (invoice_date !== undefined) {
+        updateFields.push(`invoice_date = $${paramIndex++}`);
+        queryParams.push(invoice_date);
+      }
+
+      if (company_name !== undefined) {
+        updateFields.push(`company_name = $${paramIndex++}`);
+        queryParams.push(company_name);
+      }
+
+      if (vat_number !== undefined) {
+        updateFields.push(`vat_number = $${paramIndex++}`);
+        queryParams.push(vat_number);
+      }
+
+      if (iban !== undefined) {
+        updateFields.push(`iban = $${paramIndex++}`);
+        queryParams.push(iban);
+      }
+
+      if (bank_name !== undefined) {
+        updateFields.push(`bank_name = $${paramIndex++}`);
+        queryParams.push(bank_name);
+      }
+
+      if (payment_terms !== undefined) {
+        updateFields.push(`payment_terms = $${paramIndex++}`);
+        queryParams.push(payment_terms ? JSON.stringify(payment_terms) : null);
+      }
+
+      if (attachment_url !== undefined) {
+        updateFields.push(`attachment_url = $${paramIndex++}`);
+        queryParams.push(attachment_url);
+      }
+
+      if (group_id !== undefined) {
+        updateFields.push(`group_id = $${paramIndex++}`);
+        queryParams.push(group_id);
       }
       
       if (updateFields.length === 0) {
@@ -273,15 +383,19 @@ export default async function scadenziarioRoutes(fastify, options) {
         UPDATE scadenziario
         SET ${updateFields.join(', ')}
         WHERE id = $1
-        RETURNING 
-          id, 
-          subject, 
-          description, 
-          causale, 
+        RETURNING
+          id,
+          subject,
+          description,
+          causale,
           to_char(date, 'YYYY-MM-DD') AS date,
           amount,
           to_char(payment_date, 'YYYY-MM-DD') AS payment_date,
-          status
+          status,
+          type, alert_days, invoice_number,
+          to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
+          company_name, vat_number, iban, bank_name,
+          payment_terms, attachment_url, group_id
       `;
       
       const client = await fastify.pg.pool.connect();
