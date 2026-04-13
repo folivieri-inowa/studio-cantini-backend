@@ -3,24 +3,24 @@ import { createMinioClient, ensureBucketExists } from '../lib/minio-config.js';
 
 const MINIO_BUCKET_SCADENZIARIO = 'scadenziario-attachments';
 const DOCLING_URL = process.env.DOCLING_URL || 'http://localhost:5001';
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama.studio-cantini.svc.cluster.local:11434';
 
 async function extractInvoiceFieldsWithOllama(text) {
-  const prompt = `Sei un assistente che estrae dati strutturati da fatture italiane.
+  const prompt = `Sei un assistente esperto in fatture italiane. Estrai i dati dalla fattura qui sotto e rispondi SOLO con un oggetto JSON valido, nessun testo aggiuntivo.
 
-Analizza il seguente testo estratto da una fattura e restituisci un JSON con questi campi:
-- invoice_number: numero fattura (stringa, es. "001/2026")
-- invoice_date: data fattura in formato YYYY-MM-DD (es. "2026-03-13")
-- due_date: data di scadenza/pagamento in formato YYYY-MM-DD se presente (es. "2026-03-13")
-- amount: importo totale come numero decimale (es. 1998.88)
-- company_name: nome/ragione sociale del fornitore (chi emette la fattura)
-- vat_number: partita IVA del fornitore (solo cifre, 11 caratteri)
-- iban: IBAN se presente (stringa)
-- payment_terms: condizioni di pagamento (es. "Vista fattura", "30 giorni", "60 giorni")
+Campi da estrarre:
+- "invoice_number": numero fattura (stringa). Nelle fatture elettroniche italiane di solito è nel nome file o nell'intestazione. Se non trovato usa null.
+- "invoice_date": data di emissione della fattura in formato YYYY-MM-DD. NON usare date di decreti/leggi come "28/12/2018". Cerca la data vicino a "Data" o "Emessa il" o la data nell'ultima riga con importo e scadenza.
+- "due_date": data di scadenza pagamento in formato YYYY-MM-DD. Cercala nella riga con "Scadenze" o nella riga finale con importo e "Bonifico" (es. "1.998,88 € il 13/03/2026").
+- "amount": importo totale da pagare come numero decimale senza simbolo €. Il "Totale" nella tabella in fondo (es. 1998.88).
+- "company_name": nome del FORNITORE che emette la fattura (chi chiede il pagamento). È il PRIMO nome/ragione sociale in cima al documento prima di "Spettabile".
+- "subject": descrizione del servizio/prodotto (dalla colonna "Descrizione" della tabella, es. "Daytime personal chef febbraio e marzo").
+- "vat_number": partita IVA del fornitore, solo 11 cifre.
+- "iban": codice IBAN completo (inizia con IT seguito da cifre e lettere).
+- "bank_name": nome della banca (es. "Unicredit Spa").
+- "payment_terms": condizioni di pagamento dalla riga "Scadenze" (es. "Vista fattura").
 
-Rispondi SOLO con il JSON, senza testo aggiuntivo. Se un campo non è presente usa null.
-
-Testo fattura:
+Fattura:
 ${text}`;
 
   try {
@@ -28,18 +28,18 @@ ${text}`;
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'llama3.2',
+        model: 'qwen2.5:7b',
         prompt,
         stream: false,
         format: 'json',
       }),
-      signal: AbortSignal.timeout(60000),
+      signal: AbortSignal.timeout(90000),
     });
 
     if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
     const data = await res.json();
     const parsed = JSON.parse(data.response);
-    console.log('[OCR] Campi estratti da Ollama:', parsed);
+    console.log('[OCR] Campi estratti da Ollama:', JSON.stringify(parsed));
     return parsed;
   } catch (err) {
     console.error('[OCR] Ollama fallback a regex:', err.message);
