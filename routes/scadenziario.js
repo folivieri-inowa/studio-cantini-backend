@@ -1,4 +1,9 @@
 // routes/scadenziario.js
+import { createMinioClient, ensureBucketExists } from '../lib/minio-config.js';
+
+const MINIO_BUCKET_SCADENZIARIO = 'scadenziario-attachments';
+const DOCLING_URL = process.env.DOCLING_URL || 'http://localhost:5001';
+
 export default async function scadenziarioRoutes(fastify, options) {
   // Middleware di autenticazione
   const preHandler = fastify.authenticate;
@@ -701,6 +706,115 @@ export default async function scadenziarioRoutes(fastify, options) {
     } catch (error) {
       console.error('Errore durante l\'eliminazione del gruppo:', error);
       reply.status(500).send({ error: 'Errore durante l\'eliminazione del gruppo', message: error.message });
+    }
+  });
+
+  // Endpoint OCR: estrae dati da PDF/immagine fattura via Docling
+  fastify.post('/ocr-extract', { preHandler }, async (request, reply) => {
+    try {
+      const data = await request.file();
+      if (!data) return reply.status(400).send({ error: 'Nessun file ricevuto' });
+
+      const buffer = await data.toBuffer();
+      const filename = data.filename || 'document.pdf';
+      const ext = filename.split('.').pop()?.toLowerCase();
+      const mimeTypes = {
+        pdf: 'application/pdf',
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+      };
+      const mimeType = mimeTypes[ext] || 'application/octet-stream';
+
+      // Chiama Docling
+      const params = new URLSearchParams({ do_ocr: 'true', do_table_structure: 'true', ocr_engine: 'tesseract', ocr_lang: 'ita' });
+      const boundary = '----FormBoundary' + Math.random().toString(36).substring(2);
+      const header = Buffer.from([
+        `--${boundary}`,
+        `Content-Disposition: form-data; name="files"; filename="${filename}"`,
+        `Content-Type: ${mimeType}`,
+        '',
+        '',
+      ].join('\r\n'));
+      const footer = Buffer.from(`\r\n--${boundary}--\r\n`);
+      const formData = Buffer.concat([header, buffer, footer]);
+
+      const doclingRes = await fetch(`${DOCLING_URL}/v1/convert/file?${params.toString()}`, {
+        method: 'POST',
+        body: formData,
+        headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+        signal: AbortSignal.timeout(5 * 60 * 1000), // 5 minuti
+      });
+
+      if (!doclingRes.ok) {
+        const errText = await doclingRes.text();
+        return reply.status(502).send({ error: 'Docling error', message: errText });
+      }
+
+      const doclingData = await doclingRes.json();
+      const text = doclingData.document?.md_content
+        || doclingData.document?.text_content
+        || doclingData.md_content
+        || doclingData.text_content
+        || '';
+
+      // Estrazione campi con regex
+      const invoiceNumber = text.match(/(?:fattura|n\.?|nr\.?)\s*[:\s]*([\w\/\-]+)/i)?.[1] || null;
+      const invoiceDate   = text.match(/(\d{2}[\/\-]\d{2}[\/\-]\d{4})/)?.[1] || null;
+      const amount        = text.match(/(?:totale|importo)[^\d]*([\d.,]+)/i)?.[1]?.replace(',', '.') || null;
+      const companyName   = text.match(/^([A-Z][A-Z\s&.,']+)$/m)?.[1]?.trim() || null;
+      const vatNumber     = text.match(/P\.?\s*IVA[:\s]*([\d]{11})/i)?.[1] || null;
+
+      reply.send({
+        data: {
+          invoice_number: invoiceNumber,
+          invoice_date: invoiceDate,
+          amount: amount ? parseFloat(amount) : null,
+          company_name: companyName,
+          vat_number: vatNumber,
+        },
+      });
+    } catch (error) {
+      console.error('Errore OCR extract:', error);
+      reply.status(500).send({ error: 'Errore OCR extract', message: error.message });
+    }
+  });
+
+  // Endpoint upload allegato su MinIO bucket scadenziario-attachments
+  fastify.post('/upload-attachment', { preHandler }, async (request, reply) => {
+    try {
+      const data = await request.file();
+      if (!data) return reply.status(400).send({ error: 'Nessun file ricevuto' });
+
+      const { owner_id } = request.query;
+      const buffer = await data.toBuffer();
+      const ext = data.filename.split('.').pop();
+      const objectName = `${owner_id || 'unknown'}/${new Date().getFullYear()}/${Date.now()}.${ext}`;
+
+      const minioClient = createMinioClient();
+      await ensureBucketExists(minioClient, MINIO_BUCKET_SCADENZIARIO);
+      await minioClient.putObject(MINIO_BUCKET_SCADENZIARIO, objectName, buffer, buffer.length, {
+        'Content-Type': data.mimetype,
+      });
+
+      const url = `/api/scadenziario/attachment/${encodeURIComponent(objectName)}`;
+      reply.send({ data: { url, object_name: objectName } });
+    } catch (error) {
+      console.error('Errore upload allegato:', error);
+      reply.status(500).send({ error: 'Errore upload allegato', message: error.message });
+    }
+  });
+
+  // Endpoint per servire un allegato da MinIO
+  fastify.get('/attachment/:objectName', { preHandler }, async (request, reply) => {
+    try {
+      const objectName = decodeURIComponent(request.params.objectName);
+      const minioClient = createMinioClient();
+      const stream = await minioClient.getObject(MINIO_BUCKET_SCADENZIARIO, objectName);
+      reply.send(stream);
+    } catch (error) {
+      console.error('Errore recupero allegato:', error);
+      reply.status(500).send({ error: 'Errore recupero allegato', message: error.message });
     }
   });
 };
