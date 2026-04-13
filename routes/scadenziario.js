@@ -3,6 +3,62 @@ import { createMinioClient, ensureBucketExists } from '../lib/minio-config.js';
 
 const MINIO_BUCKET_SCADENZIARIO = 'scadenziario-attachments';
 const DOCLING_URL = process.env.DOCLING_URL || 'http://localhost:5001';
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
+
+async function extractInvoiceFieldsWithOllama(text) {
+  const prompt = `Sei un assistente che estrae dati strutturati da fatture italiane.
+
+Analizza il seguente testo estratto da una fattura e restituisci un JSON con questi campi:
+- invoice_number: numero fattura (stringa, es. "001/2026")
+- invoice_date: data fattura in formato YYYY-MM-DD (es. "2026-03-13")
+- due_date: data di scadenza/pagamento in formato YYYY-MM-DD se presente (es. "2026-03-13")
+- amount: importo totale come numero decimale (es. 1998.88)
+- company_name: nome/ragione sociale del fornitore (chi emette la fattura)
+- vat_number: partita IVA del fornitore (solo cifre, 11 caratteri)
+- iban: IBAN se presente (stringa)
+- payment_terms: condizioni di pagamento (es. "Vista fattura", "30 giorni", "60 giorni")
+
+Rispondi SOLO con il JSON, senza testo aggiuntivo. Se un campo non è presente usa null.
+
+Testo fattura:
+${text}`;
+
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama3.2',
+        prompt,
+        stream: false,
+        format: 'json',
+      }),
+      signal: AbortSignal.timeout(60000),
+    });
+
+    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+    const data = await res.json();
+    const parsed = JSON.parse(data.response);
+    console.log('[OCR] Campi estratti da Ollama:', parsed);
+    return parsed;
+  } catch (err) {
+    console.error('[OCR] Ollama fallback a regex:', err.message);
+    return null;
+  }
+}
+
+function extractInvoiceFieldsWithRegex(text) {
+  const invoiceNumber = text.match(/(?:fattura\s*n\.?|nr\.?|n\.)\s*[:\s]*([\w\/\-]+)/i)?.[1] || null;
+  const dateMatches  = [...text.matchAll(/(\d{2})[\/\-](\d{2})[\/\-](\d{4})/g)];
+  const invoiceDate  = dateMatches[0] ? `${dateMatches[0][3]}-${dateMatches[0][2]}-${dateMatches[0][1]}` : null;
+  const dueDate      = dateMatches[1] ? `${dateMatches[1][3]}-${dateMatches[1][2]}-${dateMatches[1][1]}` : null;
+  const amountMatch  = text.match(/(?:totale|importo totale)[^\d]*([\d.,]+)/i)?.[1];
+  const amount       = amountMatch ? parseFloat(amountMatch.replace('.', '').replace(',', '.')) : null;
+  const companyName  = text.match(/^##\s+(.+)$/m)?.[1]?.trim() || null;
+  const vatNumber    = text.match(/P\.?\s*IVA[:\s]*([\d]{11})/i)?.[1] || null;
+  const iban         = text.match(/IBAN[:\s]*([A-Z]{2}\d{2}[A-Z0-9]+)/i)?.[1] || null;
+  return { invoice_number: invoiceNumber, invoice_date: invoiceDate, due_date: dueDate, amount, company_name: companyName, vat_number: vatNumber, iban, payment_terms: null };
+}
 
 export default async function scadenziarioRoutes(fastify, options) {
   // Middleware di autenticazione
@@ -761,22 +817,11 @@ export default async function scadenziarioRoutes(fastify, options) {
       // Log testo grezzo per debug
       console.log('[OCR] Testo estratto da Docling (primi 2000 caratteri):\n', text.substring(0, 2000));
 
-      // Estrazione campi con regex
-      const invoiceNumber = text.match(/(?:fattura|n\.?|nr\.?)\s*[:\s]*([\w\/\-]+)/i)?.[1] || null;
-      const invoiceDate   = text.match(/(\d{2}[\/\-]\d{2}[\/\-]\d{4})/)?.[1] || null;
-      const amount        = text.match(/(?:totale|importo)[^\d]*([\d.,]+)/i)?.[1]?.replace(',', '.') || null;
-      const companyName   = text.match(/^([A-Z][A-Z\s&.,']+)$/m)?.[1]?.trim() || null;
-      const vatNumber     = text.match(/P\.?\s*IVA[:\s]*([\d]{11})/i)?.[1] || null;
+      // Estrazione campi: prima Ollama, fallback regex
+      let fields = await extractInvoiceFieldsWithOllama(text);
+      if (!fields) fields = extractInvoiceFieldsWithRegex(text);
 
-      reply.send({
-        data: {
-          invoice_number: invoiceNumber,
-          invoice_date: invoiceDate,
-          amount: amount ? parseFloat(amount) : null,
-          company_name: companyName,
-          vat_number: vatNumber,
-        },
-      });
+      reply.send({ data: fields });
     } catch (error) {
       console.error('Errore OCR extract:', error);
       reply.status(500).send({ error: 'Errore OCR extract', message: error.message });
