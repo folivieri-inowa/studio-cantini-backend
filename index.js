@@ -49,6 +49,8 @@ import {
 import { runMigrations } from './lib/migrations.js';
 // Verifica schema database
 import verifyDatabaseSchema from './lib/verifyDatabaseSchema.js';
+// Avvisi scadenziario
+import { sendScadenziarioAlerts } from './jobs/scadenziarioAlerts.js';
 
 // Require the framework and instantiate it
 const fastify = Fastify({ logger: false });
@@ -137,6 +139,15 @@ const start = async () => {
       await fastify.listen({ port: process.env.PORT });
     }
     console.log(`✅ Server listening on ${fastify.server.address().port}`);
+
+    // Cron giornaliero ore 08:00 per avvisi scadenziario
+    const nodeCron = await import('node-cron');
+    nodeCron.default.schedule('0 8 * * *', () => {
+      sendScadenziarioAlerts(fastify).catch(err =>
+        console.error('❌ Errore avvisi scadenziario:', err)
+      );
+    }, { timezone: 'Europe/Rome' });
+    console.log('📅 Cron avvisi scadenziario registrato (ore 08:00 Europe/Rome)');
   } catch (err) {
     console.error('❌ Errore durante l\'avvio del server:', err);
     process.exit(1);
