@@ -758,6 +758,9 @@ export default async function scadenziarioRoutes(fastify, options) {
         || doclingData.text_content
         || '';
 
+      // Log testo grezzo per debug
+      console.log('[OCR] Testo estratto da Docling (primi 2000 caratteri):\n', text.substring(0, 2000));
+
       // Estrazione campi con regex
       const invoiceNumber = text.match(/(?:fattura|n\.?|nr\.?)\s*[:\s]*([\w\/\-]+)/i)?.[1] || null;
       const invoiceDate   = text.match(/(\d{2}[\/\-]\d{2}[\/\-]\d{4})/)?.[1] || null;
