@@ -23,7 +23,8 @@ const auth = async (fastify) => {
         responseUser.db = firstRole.db;
       }
       
-      // Rimuovi dbrole dalla risposta per sicurezza
+      // Aggiungi lista db prima di rimuovere dbrole
+      responseUser.allDbs = Array.isArray(user.dbrole) ? user.dbrole.map(r => r.db) : [];
       delete responseUser.dbrole;
 
       reply.send({ data: { user: responseUser } });
@@ -62,6 +63,9 @@ const auth = async (fastify) => {
       }
 
       delete user.password;
+
+      // Estrai la lista dei db prima di rimuovere dbrole
+      const allDbs = Array.isArray(user.dbrole) ? user.dbrole.map(r => r.db) : [];
       delete user.dbrole;
 
       const token = fastify.jwt.sign({ id: user.id }, {
@@ -69,9 +73,9 @@ const auth = async (fastify) => {
       });
 
       // Se c'è un ruolo per il db, lo includiamo nella risposta
-      const responseUser = userRole 
-        ? { ...user, role: userRole.role, db: db }
-        : user;
+      const responseUser = userRole
+        ? { ...user, role: userRole.role, db: db, allDbs }
+        : { ...user, allDbs };
 
       reply.send({ data: { accessToken: token, user: responseUser } });
     } catch (error) {
