@@ -3,46 +3,51 @@ import { createMinioClient, ensureBucketExists } from '../lib/minio-config.js';
 
 const MINIO_BUCKET_SCADENZIARIO = 'scadenziario-attachments';
 const DOCLING_URL = process.env.DOCLING_URL || 'http://localhost:5001';
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://ollama.studio-cantini.svc.cluster.local:11434';
+const COPILOT_BRIDGE_URL = process.env.COPILOT_BRIDGE_URL || 'http://copilot-bridge.copilot-proxy.svc.cluster.local:8080';
 
-async function extractInvoiceFieldsWithOllama(text) {
-  const prompt = `Sei un assistente esperto in fatture italiane. Estrai i dati dalla fattura qui sotto e rispondi SOLO con un oggetto JSON valido, nessun testo aggiuntivo.
+async function extractInvoiceFieldsWithAI(text) {
+  const systemPrompt = `Sei un assistente esperto in fatture italiane. Estrai i dati dalla fattura e rispondi SOLO con un oggetto JSON valido, senza markdown, senza testo aggiuntivo.`;
 
-Campi da estrarre:
-- "invoice_number": numero fattura (stringa). Nelle fatture elettroniche italiane di solito è nel nome file o nell'intestazione. Se non trovato usa null.
-- "invoice_date": data di emissione della fattura in formato YYYY-MM-DD. NON usare date di decreti/leggi come "28/12/2018". Cerca la data vicino a "Data" o "Emessa il" o la data nell'ultima riga con importo e scadenza.
+  const userPrompt = `Estrai i seguenti campi dalla fattura italiana qui sotto:
+- "invoice_number": numero fattura (stringa). Nelle fatture italiane è vicino a "Fattura N." o "Nr.". Se non trovato usa null.
+- "invoice_date": data di emissione della fattura in formato YYYY-MM-DD. NON usare date di decreti/leggi (es. "28/12/2018"). Cerca la data vicino a "Data" o "Emessa il".
 - "due_date": data di scadenza pagamento in formato YYYY-MM-DD. Cercala nella riga con "Scadenze" o nella riga finale con importo e "Bonifico" (es. "1.998,88 € il 13/03/2026").
-- "amount": importo totale da pagare come numero decimale senza simbolo €. Il "Totale" nella tabella in fondo (es. 1998.88).
-- "company_name": nome del FORNITORE che emette la fattura (chi chiede il pagamento). È il PRIMO nome/ragione sociale in cima al documento prima di "Spettabile".
-- "subject": descrizione del servizio/prodotto (dalla colonna "Descrizione" della tabella, es. "Daytime personal chef febbraio e marzo").
-- "vat_number": partita IVA del fornitore, solo 11 cifre.
+- "amount": importo totale da pagare come numero decimale senza simbolo €. Prendi il "Totale" dalla tabella in fondo (es. 1998.88).
+- "company_name": nome del FORNITORE che emette la fattura (chi chiede il pagamento). È il PRIMO nome/ragione sociale in cima al documento, prima di "Spettabile".
+- "subject": descrizione del servizio/prodotto dalla colonna "Descrizione" della tabella.
+- "vat_number": partita IVA del fornitore, solo 11 cifre numeriche.
 - "iban": codice IBAN completo (inizia con IT seguito da cifre e lettere).
 - "bank_name": nome della banca (es. "Unicredit Spa").
-- "payment_terms": condizioni di pagamento dalla riga "Scadenze" (es. "Vista fattura").
+- "payment_terms": condizioni di pagamento (es. "Vista fattura", "30gg").
+
+Rispondi SOLO con JSON valido, nessun testo aggiuntivo.
 
 Fattura:
 ${text}`;
 
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+    const res = await fetch(`${COPILOT_BRIDGE_URL}/v1/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'qwen2.5:7b',
-        prompt,
-        stream: false,
-        format: 'json',
+        model: 'claude-sonnet-4.6',
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }],
       }),
-      signal: AbortSignal.timeout(90000),
+      signal: AbortSignal.timeout(60000),
     });
 
-    if (!res.ok) throw new Error(`Ollama error: ${res.status}`);
+    if (!res.ok) throw new Error(`copilot-bridge error: ${res.status}`);
     const data = await res.json();
-    const parsed = JSON.parse(data.response);
-    console.log('[OCR] Campi estratti da Ollama:', JSON.stringify(parsed));
+    const rawText = data.content?.[0]?.text ?? '';
+    // Strip markdown code fences if present
+    const jsonText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+    const parsed = JSON.parse(jsonText);
+    console.log('[OCR] Campi estratti da copilot-bridge:', JSON.stringify(parsed));
     return parsed;
   } catch (err) {
-    console.error('[OCR] Ollama fallback a regex:', err.message);
+    console.error('[OCR] copilot-bridge fallback a regex:', err.message);
     return null;
   }
 }
@@ -817,8 +822,8 @@ export default async function scadenziarioRoutes(fastify, options) {
       // Log testo grezzo per debug
       console.log('[OCR] Testo estratto da Docling (primi 2000 caratteri):\n', text.substring(0, 2000));
 
-      // Estrazione campi: prima Ollama, fallback regex
-      let fields = await extractInvoiceFieldsWithOllama(text);
+      // Estrazione campi: prima copilot-bridge, fallback regex
+      let fields = await extractInvoiceFieldsWithAI(text);
       if (!fields) fields = extractInvoiceFieldsWithRegex(text);
 
       reply.send({ data: fields });
