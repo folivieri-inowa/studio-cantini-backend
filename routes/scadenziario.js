@@ -9,16 +9,17 @@ async function extractInvoiceFieldsWithAI(text) {
   const systemPrompt = `Sei un assistente esperto in fatture italiane. Estrai i dati dalla fattura e rispondi SOLO con un oggetto JSON valido, senza markdown, senza testo aggiuntivo.`;
 
   const userPrompt = `Estrai i seguenti campi dalla fattura italiana qui sotto:
-- "invoice_number": numero fattura (stringa). Nelle fatture italiane è vicino a "Fattura N." o "Nr.". Se non trovato usa null.
-- "invoice_date": data di emissione della fattura in formato YYYY-MM-DD. NON usare date di decreti/leggi (es. "28/12/2018"). Cerca la data vicino a "Data" o "Emessa il".
-- "due_date": data di scadenza pagamento in formato YYYY-MM-DD. Cercala nella riga con "Scadenze" o nella riga finale con importo e "Bonifico" (es. "1.998,88 € il 13/03/2026").
-- "amount": importo totale da pagare come numero decimale senza simbolo €. Prendi il "Totale" dalla tabella in fondo (es. 1998.88).
-- "company_name": nome del FORNITORE che emette la fattura (chi chiede il pagamento). È il PRIMO nome/ragione sociale in cima al documento, prima di "Spettabile".
-- "subject": descrizione del servizio/prodotto dalla colonna "Descrizione" della tabella.
+- "invoice_number": numero fattura (stringa). Cerca "Fattura N.", "Nr.", "N. fattura". Se non presente nel testo usa null.
+- "invoice_date": data di emissione fattura in formato YYYY-MM-DD. Cerca vicino a "Fattura N." o "del". NON usare date di decreti/leggi come "28/12/2018". Se assente usa null.
+- "due_date": data scadenza pagamento in formato YYYY-MM-DD. Cerca nella riga finale con importo e "Bonifico" (es. "1.998,88 € il 13/03/2026") oppure nella riga "Scadenze".
+- "amount": importo totale come numero decimale senza simbolo €. Prendi il campo "Totale" in fondo (es. 1998.88).
+- "company_name": nome del FORNITORE (chi emette la fattura, chi chiede il pagamento). È il PRIMO nome/ragione sociale prima della parola "Spettabile".
+- "subject": nome del DESTINATARIO della fattura (chi deve pagare). È il nome/ragione sociale che appare DOPO "Spettabile" o "Intestato a".
+- "description": descrizione del servizio dalla colonna "Descrizione" della tabella delle voci.
 - "vat_number": partita IVA del fornitore, solo 11 cifre numeriche.
-- "iban": codice IBAN completo (inizia con IT seguito da cifre e lettere).
-- "bank_name": nome della banca (es. "Unicredit Spa").
-- "payment_terms": condizioni di pagamento (es. "Vista fattura", "30gg").
+- "iban": codice IBAN completo (inizia con IT).
+- "bank_name": nome della banca.
+- "payment_terms": condizioni di pagamento come valore chiave tra: "immediato" (Vista fattura / immediato), "30gg" (30 giorni), "60gg" (60 giorni), "90gg" (90 giorni), "30ggfm" (30 gg fine mese), "60ggfm" (60 gg fine mese), "data_fissa" (data fissa). Scegli il più adatto in base alla riga "Scadenze".
 
 Rispondi SOLO con JSON valido, nessun testo aggiuntivo.
 
