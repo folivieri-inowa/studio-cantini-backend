@@ -16,6 +16,7 @@ export { default as SmartClassifierRoutes } from './smart-classifier.js'
 export { default as ClassifierRoutes } from './classifier.js'
 export { default as ArchiveRoutes } from '../modules/archive/routes/archive.routes.js'
 export { default as CategoryExclusionRoutes } from './categoryExclusion.js'
+export { default as VehiclesRoutes } from './vehicles.js'
 // export { default as GroupsRoutes } from './groups.js' // Disabled - using consultative approach in report.js
 // export { default as SetupRoutes } from './setup.js'
 // export { default as MLAnalysisRoutes } from './ml-analysis.js'
