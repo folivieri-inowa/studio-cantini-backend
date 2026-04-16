@@ -860,12 +860,30 @@ export default async function scadenziarioRoutes(fastify, options) {
   });
 
   // Endpoint per servire un allegato da MinIO
-  fastify.get('/attachment/:objectName', { preHandler }, async (request, reply) => {
+  // Usa wildcard per gestire path con slash (es. temp/2026/123.pdf)
+  fastify.get('/attachment/*', { preHandler }, async (request, reply) => {
     try {
-      const objectName = decodeURIComponent(request.params.objectName);
+      const objectName = decodeURIComponent(request.params['*']);
       const minioClient = createMinioClient();
+
+      // Legge le info dell'oggetto per avere la dimensione
+      const stat = await minioClient.statObject(MINIO_BUCKET_SCADENZIARIO, objectName);
       const stream = await minioClient.getObject(MINIO_BUCKET_SCADENZIARIO, objectName);
-      reply.send(stream);
+
+      // Raccoglie tutti i chunk e invia il buffer completo
+      const chunks = [];
+      for await (const chunk of stream) {
+        chunks.push(chunk);
+      }
+      const buffer = Buffer.concat(chunks);
+
+      const ext = objectName.split('.').pop()?.toLowerCase();
+      const mimeTypes = { pdf: 'application/pdf', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
+      reply
+        .header('Content-Type', mimeTypes[ext] || 'application/octet-stream')
+        .header('Content-Disposition', `inline; filename="${objectName.split('/').pop()}"`)
+        .header('Content-Length', buffer.length)
+        .send(buffer);
     } catch (error) {
       console.error('Errore recupero allegato:', error);
       reply.status(500).send({ error: 'Errore recupero allegato', message: error.message });
