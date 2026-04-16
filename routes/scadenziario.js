@@ -91,7 +91,8 @@ export default async function scadenziarioRoutes(fastify, options) {
           s.type, s.alert_days, s.invoice_number,
           to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
           s.company_name, s.vat_number, s.iban, s.bank_name,
-          s.payment_terms, s.attachment_url, s.group_id
+          s.payment_terms, s.attachment_url, s.group_id,
+          s.vehicle_id, s.source_module
         FROM
           scadenziario s
         LEFT JOIN
@@ -99,10 +100,10 @@ export default async function scadenziarioRoutes(fastify, options) {
         WHERE
           1=1
       `;
-      
+
       // Array per i parametri della query
       const queryParams = [];
-      
+
       // Aggiunta filtri alla query
       if (filters.subject) {
         queryParams.push(`%${filters.subject}%`);
@@ -135,6 +136,18 @@ export default async function scadenziarioRoutes(fastify, options) {
       if (filters.type) {
         queryParams.push(filters.type);
         queryText += ` AND s.type = $${queryParams.length}`;
+      }
+
+      // Filtro per veicolo
+      if (filters.vehicleId) {
+        queryParams.push(filters.vehicleId);
+        queryText += ` AND s.vehicle_id = $${queryParams.length}`;
+      }
+
+      // Filtro per source_module
+      if (filters.sourceModule) {
+        queryParams.push(filters.sourceModule);
+        queryText += ` AND s.source_module = $${queryParams.length}`;
       }
 
       // Ordinamento e limite
@@ -181,7 +194,8 @@ export default async function scadenziarioRoutes(fastify, options) {
           s.type, s.alert_days, s.invoice_number,
           to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
           s.company_name, s.vat_number, s.iban, s.bank_name,
-          s.payment_terms, s.attachment_url, s.group_id
+          s.payment_terms, s.attachment_url, s.group_id,
+          s.vehicle_id, s.source_module
         FROM
           scadenziario s
         LEFT JOIN
@@ -241,6 +255,8 @@ export default async function scadenziarioRoutes(fastify, options) {
         payment_terms,
         attachment_url,
         group_id,
+        vehicle_id,
+        source_module,
       } = scadenza;
 
       // Verifica dei campi obbligatori
@@ -255,9 +271,9 @@ export default async function scadenziarioRoutes(fastify, options) {
         INSERT INTO scadenziario
           (subject, description, causale, date, amount, payment_date, status, owner_id,
            type, alert_days, invoice_number, invoice_date, company_name, vat_number,
-           iban, bank_name, payment_terms, attachment_url, group_id)
+           iban, bank_name, payment_terms, attachment_url, group_id, vehicle_id, source_module)
         VALUES
-          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
         RETURNING
           id,
           subject,
@@ -270,7 +286,8 @@ export default async function scadenziarioRoutes(fastify, options) {
           type, alert_days, invoice_number,
           to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
           company_name, vat_number, iban, bank_name,
-          payment_terms, attachment_url, group_id
+          payment_terms, attachment_url, group_id,
+          vehicle_id, source_module
       `;
 
       const client = await fastify.pg.pool.connect();
@@ -295,6 +312,8 @@ export default async function scadenziarioRoutes(fastify, options) {
           payment_terms ? JSON.stringify(payment_terms) : null,
           attachment_url || null,
           group_id || null,
+          vehicle_id || null,
+          source_module || 'manual',
         ]);
         
         reply.send({ data: result.rows[0], success: true });
@@ -340,6 +359,8 @@ export default async function scadenziarioRoutes(fastify, options) {
         payment_terms,
         attachment_url,
         group_id,
+        vehicle_id,
+        source_module,
       } = scadenza;
 
       // Costruzione della query di aggiornamento
@@ -441,7 +462,17 @@ export default async function scadenziarioRoutes(fastify, options) {
         updateFields.push(`group_id = $${paramIndex++}`);
         queryParams.push(group_id);
       }
-      
+
+      if (vehicle_id !== undefined) {
+        updateFields.push(`vehicle_id = $${paramIndex++}`);
+        queryParams.push(vehicle_id);
+      }
+
+      if (source_module !== undefined) {
+        updateFields.push(`source_module = $${paramIndex++}`);
+        queryParams.push(source_module);
+      }
+
       if (updateFields.length === 0) {
         return reply.status(400).send({ error: 'Nessun campo da aggiornare' });
       }
@@ -462,17 +493,18 @@ export default async function scadenziarioRoutes(fastify, options) {
           type, alert_days, invoice_number,
           to_char(invoice_date, 'YYYY-MM-DD') AS invoice_date,
           company_name, vat_number, iban, bank_name,
-          payment_terms, attachment_url, group_id
+          payment_terms, attachment_url, group_id,
+          vehicle_id, source_module
       `;
-      
+
       const client = await fastify.pg.pool.connect();
       try {
         const result = await client.query(queryText, queryParams);
-        
+
         if (result.rows.length === 0) {
           return reply.status(404).send({ error: 'Scadenza non trovata' });
         }
-        
+
         reply.send({ data: result.rows[0], success: true });
       } finally {
         client.release();
