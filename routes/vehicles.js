@@ -935,4 +935,66 @@ export default async function vehiclesRoutes(fastify, options) {
       reply.send({ success: true });
     } finally { client.release(); }
   });
+
+  // ─── ZTL ──────────────────────────────────────────────────────────────────
+
+  // POST /ztl/list
+  fastify.post('/ztl/list', { preHandler }, async (request, reply) => {
+    const { vehicleId } = request.body;
+    const client = await fastify.pg.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT id, vehicle_id, city, authorization_number, permit_type,
+                to_char(valid_until, 'YYYY-MM-DD') AS valid_until,
+                notes,
+                to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+         FROM vehicle_ztl WHERE vehicle_id = $1 ORDER BY valid_until DESC`,
+        [vehicleId]
+      );
+      reply.send({ data: result.rows });
+    } finally { client.release(); }
+  });
+
+  // POST /ztl/create
+  fastify.post('/ztl/create', { preHandler }, async (request, reply) => {
+    const { ztl } = request.body;
+    if (!ztl?.vehicle_id) return reply.status(400).send({ error: 'vehicle_id obbligatorio' });
+    const { vehicle_id, city, authorization_number, permit_type, valid_until, notes } = ztl;
+    const client = await fastify.pg.pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO vehicle_ztl (vehicle_id, city, authorization_number, permit_type, valid_until, notes)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+        [vehicle_id, city, authorization_number, permit_type, valid_until, notes]
+      );
+      reply.send({ id: result.rows[0].id });
+    } finally { client.release(); }
+  });
+
+  // POST /ztl/update
+  fastify.post('/ztl/update', { preHandler }, async (request, reply) => {
+    const { id, ztl } = request.body;
+    if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
+    const { city, authorization_number, permit_type, valid_until, notes } = ztl;
+    const client = await fastify.pg.pool.connect();
+    try {
+      await client.query(
+        `UPDATE vehicle_ztl SET city=$1, authorization_number=$2, permit_type=$3, valid_until=$4, notes=$5, updated_at=NOW()
+         WHERE id=$6`,
+        [city, authorization_number, permit_type, valid_until, notes, id]
+      );
+      reply.send({ success: true });
+    } finally { client.release(); }
+  });
+
+  // POST /ztl/delete
+  fastify.post('/ztl/delete', { preHandler }, async (request, reply) => {
+    const { id } = request.body;
+    if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
+    const client = await fastify.pg.pool.connect();
+    try {
+      await client.query('DELETE FROM vehicle_ztl WHERE id = $1', [id]);
+      reply.send({ success: true });
+    } finally { client.release(); }
+  });
 }
