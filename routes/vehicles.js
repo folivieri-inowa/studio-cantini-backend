@@ -1,5 +1,6 @@
 // routes/vehicles.js
 import { createMinioClient, ensureBucketExists } from '../lib/minio-config.js';
+import { calculateBollo } from '../lib/bollo-calculator.js';
 
 const MINIO_BUCKET_VEHICLES = 'vehicle-documents';
 
@@ -855,6 +856,82 @@ export default async function vehiclesRoutes(fastify, options) {
     const client = await fastify.pg.pool.connect();
     try {
       await client.query('DELETE FROM vehicle_policies WHERE id = $1', [id]);
+      reply.send({ success: true });
+    } finally { client.release(); }
+  });
+
+  // ─── TASSE (BOLLO/SUPERBOLLO) ─────────────────────────────────────────────
+
+  // POST /taxes/list
+  fastify.post('/taxes/list', { preHandler }, async (request, reply) => {
+    const { vehicleId } = request.body;
+    const client = await fastify.pg.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT id, vehicle_id, year, region, kw_at_payment, bollo_amount, superbollo_amount,
+                (bollo_amount + superbollo_amount) AS total_amount,
+                to_char(due_date, 'YYYY-MM-DD') AS due_date,
+                to_char(paid_date, 'YYYY-MM-DD') AS paid_date,
+                payment_method, status, notes,
+                to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+         FROM vehicle_taxes WHERE vehicle_id = $1 ORDER BY year DESC`,
+        [vehicleId]
+      );
+      reply.send({ data: result.rows });
+    } finally { client.release(); }
+  });
+
+  // POST /taxes/calculate — calcola importi senza salvare
+  fastify.post('/taxes/calculate', { preHandler }, async (request, reply) => {
+    const { kw, region } = request.body;
+    reply.send(calculateBollo(kw, region));
+  });
+
+  // POST /taxes/create
+  fastify.post('/taxes/create', { preHandler }, async (request, reply) => {
+    const { tax } = request.body;
+    if (!tax?.vehicle_id || !tax?.year) {
+      return reply.status(400).send({ error: 'Campi obbligatori: vehicle_id, year' });
+    }
+    const { vehicle_id, year, region, kw_at_payment, bollo_amount, superbollo_amount, due_date, paid_date, payment_method, status = 'da_pagare', notes } = tax;
+    const client = await fastify.pg.pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO vehicle_taxes (vehicle_id, year, region, kw_at_payment, bollo_amount, superbollo_amount, due_date, paid_date, payment_method, status, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        [vehicle_id, year, region, kw_at_payment, bollo_amount || 0, superbollo_amount || 0, due_date, paid_date, payment_method, status, notes]
+      );
+      reply.send({ id: result.rows[0].id });
+    } catch (err) {
+      if (err.code === '23505') return reply.status(409).send({ error: 'Esiste già un record per questo veicolo e anno' });
+      throw err;
+    } finally { client.release(); }
+  });
+
+  // POST /taxes/update
+  fastify.post('/taxes/update', { preHandler }, async (request, reply) => {
+    const { id, tax } = request.body;
+    if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
+    const { year, region, kw_at_payment, bollo_amount, superbollo_amount, due_date, paid_date, payment_method, status, notes } = tax;
+    const client = await fastify.pg.pool.connect();
+    try {
+      await client.query(
+        `UPDATE vehicle_taxes SET year=$1, region=$2, kw_at_payment=$3, bollo_amount=$4,
+         superbollo_amount=$5, due_date=$6, paid_date=$7, payment_method=$8, status=$9, notes=$10, updated_at=NOW()
+         WHERE id=$11`,
+        [year, region, kw_at_payment, bollo_amount, superbollo_amount, due_date, paid_date, payment_method, status, notes, id]
+      );
+      reply.send({ success: true });
+    } finally { client.release(); }
+  });
+
+  // POST /taxes/delete
+  fastify.post('/taxes/delete', { preHandler }, async (request, reply) => {
+    const { id } = request.body;
+    if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
+    const client = await fastify.pg.pool.connect();
+    try {
+      await client.query('DELETE FROM vehicle_taxes WHERE id = $1', [id]);
       reply.send({ success: true });
     } finally { client.release(); }
   });
