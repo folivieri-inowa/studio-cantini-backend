@@ -29,6 +29,7 @@ export default async function vehiclesRoutes(fastify, options) {
           to_char(v.disposal_date, 'YYYY-MM-DD') AS disposal_date,
           v.disposal_buyer, v.disposal_amount, v.disposal_reason, v.disposal_notes,
           v.notes,
+          v.telepass_serial, v.telepass_notes,
           to_char(v.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
           to_char(v.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at
         FROM vehicles v
@@ -198,7 +199,7 @@ export default async function vehiclesRoutes(fastify, options) {
         'assignee_type', 'assignee_name', 'assignment_notes',
         'purchase_date', 'purchase_vendor', 'purchase_amount', 'purchase_notes',
         'disposal_date', 'disposal_buyer', 'disposal_amount', 'disposal_reason', 'disposal_notes',
-        'notes',
+        'notes', 'telepass_serial', 'telepass_notes',
       ];
 
       const setClauses = [];
