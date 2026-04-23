@@ -92,13 +92,18 @@ export default async function scadenziarioRoutes(fastify, options) {
           to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
           s.company_name, s.vat_number, s.iban, s.bank_name,
           s.payment_terms, s.attachment_url, s.group_id,
-          s.vehicle_id, s.source_module
+          s.vehicle_id, s.source_module,
+          -- riepilogo tranches (solo per fatture madri)
+          (SELECT COUNT(*) FROM scadenziario c WHERE c.parent_id = s.id) AS tranches_count,
+          (SELECT COUNT(*) FROM scadenziario c WHERE c.parent_id = s.id AND c.status = 'completed') AS tranches_paid,
+          (SELECT COALESCE(SUM(c.amount),0) FROM scadenziario c WHERE c.parent_id = s.id AND c.status = 'completed') AS paid_amount
         FROM
           scadenziario s
         LEFT JOIN
           owners o ON s.owner_id = o.id
         WHERE
-          1=1
+          s.parent_id IS NULL
+          AND 1=1
       `;
 
       // Array per i parametri della query
@@ -127,7 +132,7 @@ export default async function scadenziarioRoutes(fastify, options) {
       }
       
       // Filtro per proprietario specifico
-      if (filters.ownerId) {
+      if (filters.ownerId && filters.ownerId !== 'all-accounts') {
         queryParams.push(filters.ownerId);
         queryText += ` AND s.owner_id = $${queryParams.length}`;
       }
@@ -260,10 +265,10 @@ export default async function scadenziarioRoutes(fastify, options) {
       } = scadenza;
 
       // Verifica dei campi obbligatori
-      if (!subject || !date || amount === undefined || !status) {
+      if (!subject || !date || !status) {
         return reply.status(400).send({
           error: 'Campi obbligatori mancanti',
-          message: 'I campi soggetto, data, importo e stato sono obbligatori'
+          message: 'I campi soggetto, data e stato sono obbligatori'
         });
       }
 
@@ -297,7 +302,7 @@ export default async function scadenziarioRoutes(fastify, options) {
           description || null,
           causale || null,
           date,
-          amount,
+          (amount !== undefined && amount !== null && amount !== '') ? amount : null,
           payment_date || null,
           status,
           owner_id || null,
@@ -390,7 +395,7 @@ export default async function scadenziarioRoutes(fastify, options) {
 
       if (amount !== undefined) {
         updateFields.push(`amount = $${paramIndex++}`);
-        queryParams.push(amount);
+        queryParams.push((amount !== null && amount !== '') ? amount : null);
       }
 
       if (payment_date !== undefined) {
@@ -800,6 +805,85 @@ export default async function scadenziarioRoutes(fastify, options) {
     } catch (error) {
       console.error('Errore durante l\'eliminazione del gruppo:', error);
       reply.status(500).send({ error: 'Errore durante l\'eliminazione del gruppo', message: error.message });
+    }
+  });
+
+  // Restituisce le tranches (figli) di una fattura madre
+  fastify.post('/children', { preHandler }, async (request, reply) => {
+    try {
+      const { parent_id } = request.body;
+      if (!parent_id) return reply.status(400).send({ error: 'parent_id obbligatorio' });
+
+      const client = await fastify.pg.pool.connect();
+      try {
+        const result = await client.query(
+          `SELECT
+             s.id, s.subject, s.type,
+             to_char(s.date, 'YYYY-MM-DD') AS date,
+             s.amount,
+             to_char(s.payment_date, 'YYYY-MM-DD') AS payment_date,
+             s.status, s.description, s.parent_id
+           FROM scadenziario s
+           WHERE s.parent_id = $1
+           ORDER BY s.date ASC`,
+          [parent_id]
+        );
+        reply.send({ data: result.rows });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      reply.status(500).send({ error: 'Errore /children', message: error.message });
+    }
+  });
+
+  // Crea una tranche (acconto/saldo) collegata a una fattura madre
+  fastify.post('/create-tranche', { preHandler }, async (request, reply) => {
+    try {
+      const { tranche } = request.body;
+      if (!tranche?.parent_id) return reply.status(400).send({ error: 'parent_id obbligatorio' });
+
+      const { parent_id, subject, description, date, amount, status, owner_id, type } = tranche;
+      if (!date || !amount) return reply.status(400).send({ error: 'date e amount obbligatori' });
+
+      const client = await fastify.pg.pool.connect();
+      try {
+        // Verifica che la fattura madre esista
+        const parent = await client.query(
+          `SELECT id, amount FROM scadenziario WHERE id = $1 AND parent_id IS NULL`,
+          [parent_id]
+        );
+        if (parent.rows.length === 0) {
+          return reply.status(404).send({ error: 'Fattura madre non trovata' });
+        }
+
+        const result = await client.query(
+          `INSERT INTO scadenziario
+             (subject, description, date, amount, status, owner_id, type, parent_id, alert_days)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 15)
+           RETURNING
+             id, subject, type,
+             to_char(date, 'YYYY-MM-DD') AS date,
+             amount,
+             to_char(payment_date, 'YYYY-MM-DD') AS payment_date,
+             status, description, parent_id`,
+          [
+            subject || `Tranche — ${date}`,
+            description || null,
+            date,
+            amount,
+            status || 'future',
+            owner_id || null,
+            type || 'acconto',
+            parent_id,
+          ]
+        );
+        reply.send({ data: result.rows[0], success: true });
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      reply.status(500).send({ error: 'Errore /create-tranche', message: error.message });
     }
   });
 
