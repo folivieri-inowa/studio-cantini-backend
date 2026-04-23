@@ -792,4 +792,70 @@ export default async function vehiclesRoutes(fastify, options) {
       reply.status(500).send({ error: 'Errore recupero timeline', message: error.message });
     }
   });
+
+  // ─── POLIZZE ──────────────────────────────────────────────────────────────
+
+  // POST /policies/list
+  fastify.post('/policies/list', { preHandler }, async (request, reply) => {
+    const { vehicleId } = request.body;
+    const client = await fastify.pg.pool.connect();
+    try {
+      const result = await client.query(
+        `SELECT id, vehicle_id, policy_number, insurer, policy_types, broker,
+                to_char(start_date, 'YYYY-MM-DD') AS start_date,
+                to_char(end_date, 'YYYY-MM-DD') AS end_date,
+                premium_amount, status, notes,
+                to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
+         FROM vehicle_policies WHERE vehicle_id = $1 ORDER BY start_date DESC`,
+        [vehicleId]
+      );
+      reply.send({ data: result.rows });
+    } finally { client.release(); }
+  });
+
+  // POST /policies/create
+  fastify.post('/policies/create', { preHandler }, async (request, reply) => {
+    const { policy } = request.body;
+    if (!policy?.vehicle_id || !policy?.policy_number || !policy?.insurer || !policy?.start_date || !policy?.end_date) {
+      return reply.status(400).send({ error: 'Campi obbligatori: vehicle_id, policy_number, insurer, start_date, end_date' });
+    }
+    const { vehicle_id, policy_number, insurer, policy_types = [], broker, start_date, end_date, premium_amount, status = 'attiva', notes } = policy;
+    const client = await fastify.pg.pool.connect();
+    try {
+      const result = await client.query(
+        `INSERT INTO vehicle_policies (vehicle_id, policy_number, insurer, policy_types, broker, start_date, end_date, premium_amount, status, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
+        [vehicle_id, policy_number, insurer, policy_types, broker, start_date, end_date, premium_amount, status, notes]
+      );
+      reply.send({ id: result.rows[0].id });
+    } finally { client.release(); }
+  });
+
+  // POST /policies/update
+  fastify.post('/policies/update', { preHandler }, async (request, reply) => {
+    const { id, policy } = request.body;
+    if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
+    const { policy_number, insurer, policy_types, broker, start_date, end_date, premium_amount, status, notes } = policy;
+    const client = await fastify.pg.pool.connect();
+    try {
+      await client.query(
+        `UPDATE vehicle_policies SET policy_number=$1, insurer=$2, policy_types=$3, broker=$4,
+         start_date=$5, end_date=$6, premium_amount=$7, status=$8, notes=$9, updated_at=NOW()
+         WHERE id=$10`,
+        [policy_number, insurer, policy_types, broker, start_date, end_date, premium_amount, status, notes, id]
+      );
+      reply.send({ success: true });
+    } finally { client.release(); }
+  });
+
+  // POST /policies/delete
+  fastify.post('/policies/delete', { preHandler }, async (request, reply) => {
+    const { id } = request.body;
+    if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
+    const client = await fastify.pg.pool.connect();
+    try {
+      await client.query('DELETE FROM vehicle_policies WHERE id = $1', [id]);
+      reply.send({ success: true });
+    } finally { client.release(); }
+  });
 }
