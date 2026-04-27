@@ -200,13 +200,7 @@ export default async function scadenziarioRoutes(fastify, options) {
           to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
           s.company_name, s.vat_number, s.iban, s.bank_name,
           s.payment_terms, s.attachment_url, s.group_id,
-          s.vehicle_id, s.source_module
-        FROM
-          scadenziario s
-        LEFT JOIN
-          owners o ON s.owner_id = o.id
-        WHERE
-          s.id = $1
+          s.vehicle_id, s.source_module, s.payment_receipt_url
       `;
       
       const client = await fastify.pg.pool.connect();
