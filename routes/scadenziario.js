@@ -92,7 +92,7 @@ export default async function scadenziarioRoutes(fastify, options) {
           to_char(s.invoice_date, 'YYYY-MM-DD') AS invoice_date,
           s.company_name, s.vat_number, s.iban, s.bank_name,
           s.payment_terms, s.attachment_url, s.group_id,
-          s.vehicle_id, s.source_module,
+          s.vehicle_id, s.source_module, s.payment_receipt_url,
           -- riepilogo tranches (solo per fatture madri)
           (SELECT COUNT(*) FROM scadenziario c WHERE c.parent_id = s.id) AS tranches_count,
           (SELECT COUNT(*) FROM scadenziario c WHERE c.parent_id = s.id AND c.status = 'completed') AS tranches_paid,
@@ -366,6 +366,7 @@ export default async function scadenziarioRoutes(fastify, options) {
         group_id,
         vehicle_id,
         source_module,
+        payment_receipt_url,
       } = scadenza;
 
       // Costruzione della query di aggiornamento
@@ -461,6 +462,11 @@ export default async function scadenziarioRoutes(fastify, options) {
       if (attachment_url !== undefined) {
         updateFields.push(`attachment_url = $${paramIndex++}`);
         queryParams.push(attachment_url);
+      }
+
+      if (payment_receipt_url !== undefined) {
+        updateFields.push(`payment_receipt_url = $${paramIndex++}`);
+        queryParams.push(payment_receipt_url);
       }
 
       if (group_id !== undefined) {
