@@ -273,7 +273,7 @@ export default async function vehiclesRoutes(fastify, options) {
           `SELECT *, to_char(document_date, 'YYYY-MM-DD') AS document_date,
             to_char(expiry_date, 'YYYY-MM-DD') AS expiry_date,
             to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
-           FROM vehicle_documents WHERE vehicle_id = $1 ORDER BY created_at DESC`,
+           FROM vehicle_documents WHERE vehicle_id = $1 ORDER BY vehicle_documents.created_at DESC`,
           [vehicle_id]
         );
         reply.send({ data: result.rows });
@@ -514,7 +514,7 @@ export default async function vehiclesRoutes(fastify, options) {
           `SELECT *,
             to_char(install_date, 'YYYY-MM-DD') AS install_date,
             to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at
-           FROM vehicle_tires WHERE vehicle_id = $1 ORDER BY created_at DESC`,
+           FROM vehicle_tires WHERE vehicle_id = $1 ORDER BY vehicle_tires.created_at DESC`,
           [vehicle_id]
         );
         reply.send({ data: result.rows });
