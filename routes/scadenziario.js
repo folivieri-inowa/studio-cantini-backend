@@ -828,7 +828,7 @@ export default async function scadenziarioRoutes(fastify, options) {
              to_char(s.date, 'YYYY-MM-DD') AS date,
              s.amount,
              to_char(s.payment_date, 'YYYY-MM-DD') AS payment_date,
-             s.status, s.description, s.parent_id
+             s.status, s.description, s.parent_id, s.owner_id, s.attachment_url
            FROM scadenziario s
            WHERE s.parent_id = $1
            ORDER BY s.date ASC`,
