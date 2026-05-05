@@ -1,0 +1,1 @@
+ALTER TABLE vehicle_fines ADD COLUMN IF NOT EXISTS paid_discounted BOOLEAN DEFAULT FALSE;
