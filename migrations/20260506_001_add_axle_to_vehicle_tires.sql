@@ -1,0 +1,1 @@
+ALTER TABLE vehicle_tires ADD COLUMN IF NOT EXISTS axle VARCHAR(20) DEFAULT 'tutti';
