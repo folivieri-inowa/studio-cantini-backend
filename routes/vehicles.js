@@ -535,16 +535,16 @@ export default async function vehiclesRoutes(fastify, options) {
         return reply.status(400).send({ error: 'Campi obbligatori: vehicle_id, tire_type' });
       }
 
-      const { vehicle_id, tire_type, brand, model, size, axle, install_date, mileage_at_install, storage_location, condition, notes } = tire;
+      const { vehicle_id, tire_type, brand, model, size_front, size_rear, install_date, mileage_at_install, storage_location, condition, notes } = tire;
 
       const client = await fastify.pg.pool.connect();
       try {
         const result = await client.query(
           `INSERT INTO vehicle_tires
-            (vehicle_id, tire_type, brand, model, size, axle, install_date, mileage_at_install, storage_location, condition, notes)
+            (vehicle_id, tire_type, brand, model, size_front, size_rear, install_date, mileage_at_install, storage_location, condition, notes)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
            RETURNING *`,
-          [vehicle_id, tire_type, brand || null, model || null, size || null, axle || 'tutti', install_date || null, mileage_at_install || null, storage_location || null, condition || null, notes || null]
+          [vehicle_id, tire_type, brand || null, model || null, size_front || null, size_rear || null, install_date || null, mileage_at_install || null, storage_location || null, condition || null, notes || null]
         );
         reply.send({ data: result.rows[0], success: true });
       } finally {
@@ -562,7 +562,7 @@ export default async function vehiclesRoutes(fastify, options) {
       const { id, tire } = request.body;
       if (!id || !tire) return reply.status(400).send({ error: 'ID o dati non specificati' });
 
-      const fields = ['tire_type', 'brand', 'model', 'size', 'axle', 'install_date', 'mileage_at_install', 'storage_location', 'condition', 'notes'];
+      const fields = ['tire_type', 'brand', 'model', 'size_front', 'size_rear', 'install_date', 'mileage_at_install', 'storage_location', 'condition', 'notes'];
       const setClauses = [];
       const queryParams = [id];
       let paramIndex = 2;
