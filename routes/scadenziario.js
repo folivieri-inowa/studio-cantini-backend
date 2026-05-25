@@ -201,6 +201,9 @@ export default async function scadenziarioRoutes(fastify, options) {
           s.company_name, s.vat_number, s.iban, s.bank_name,
           s.payment_terms, s.attachment_url, s.group_id,
           s.vehicle_id, s.source_module, s.payment_receipt_url
+        FROM scadenziario s
+        LEFT JOIN owners o ON s.owner_id = o.id
+        WHERE s.id = $1
       `;
       
       const client = await fastify.pg.pool.connect();
@@ -299,7 +302,7 @@ export default async function scadenziarioRoutes(fastify, options) {
           (amount !== undefined && amount !== null && amount !== '') ? amount : null,
           payment_date || null,
           status,
-          owner_id || null,
+          (owner_id && owner_id !== 'all-accounts') ? owner_id : null,
           type || 'altro',
           alert_days || 15,
           invoice_number || null,
@@ -873,7 +876,7 @@ export default async function scadenziarioRoutes(fastify, options) {
             date,
             amount,
             status || 'future',
-            owner_id || null,
+            (owner_id && owner_id !== 'all-accounts') ? owner_id : null,
             type || 'acconto',
             parent_id,
           ]
