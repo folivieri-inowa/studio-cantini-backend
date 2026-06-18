@@ -21,6 +21,10 @@ export default async function cashFlowRoutes(fastify, options) {
           cf.employee_name,
           cf.description,
           cf.status,
+          cf.transaction_id,
+          to_char(t.date, 'YYYY-MM-DD') AS transaction_date,
+          t.description AS transaction_description,
+          t.amount AS transaction_amount,
           to_char(cf.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
           to_char(cf.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at,
           COALESCE(SUM(cfe.amount), 0) AS total_spent,
@@ -29,6 +33,7 @@ export default async function cashFlowRoutes(fastify, options) {
         FROM cash_flow cf
         LEFT JOIN owners o ON cf.owner_id = o.id
         LEFT JOIN cash_flow_expenses cfe ON cfe.cash_flow_id = cf.id
+        LEFT JOIN transactions t ON cf.transaction_id = t.id
         WHERE 1=1
       `;
 
@@ -104,6 +109,10 @@ export default async function cashFlowRoutes(fastify, options) {
              cf.employee_name,
              cf.description,
              cf.status,
+             cf.transaction_id,
+             to_char(t.date, 'YYYY-MM-DD') AS transaction_date,
+             t.description AS transaction_description,
+             t.amount AS transaction_amount,
              to_char(cf.created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
              to_char(cf.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at,
              COALESCE(SUM(cfe.amount), 0) AS total_spent,
@@ -111,9 +120,11 @@ export default async function cashFlowRoutes(fastify, options) {
            FROM cash_flow cf
            LEFT JOIN owners o ON cf.owner_id = o.id
            LEFT JOIN cash_flow_expenses cfe ON cfe.cash_flow_id = cf.id
+           LEFT JOIN transactions t ON cf.transaction_id = t.id
            WHERE cf.id = $1
            GROUP BY cf.id, cf.owner_id, o.name, cf.withdrawal_date, cf.amount,
-                    cf.employee_name, cf.description, cf.status, cf.created_at, cf.updated_at`,
+                    cf.employee_name, cf.description, cf.status, cf.created_at, cf.updated_at,
+                    cf.transaction_id, t.date, t.description, t.amount`,
           [id]
         );
 
@@ -193,7 +204,7 @@ export default async function cashFlowRoutes(fastify, options) {
   // 3. POST /create — Create withdrawal
   fastify.post('/create', { preHandler }, async (request, reply) => {
     try {
-      const { owner_id, withdrawal_date, amount, employee_name, description } = request.body;
+      const { owner_id, withdrawal_date, amount, employee_name, description, transaction_id } = request.body;
 
       // Validate required fields
       if (!owner_id) {
@@ -212,8 +223,8 @@ export default async function cashFlowRoutes(fastify, options) {
       const client = await fastify.pg.pool.connect();
       try {
         const result = await client.query(
-          `INSERT INTO cash_flow (owner_id, withdrawal_date, amount, employee_name, description)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO cash_flow (owner_id, withdrawal_date, amount, employee_name, description, transaction_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING
              id,
              owner_id,
@@ -224,7 +235,7 @@ export default async function cashFlowRoutes(fastify, options) {
              status,
              to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
              to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at`,
-          [owner_id, withdrawal_date, amount, employee_name, description || null]
+          [owner_id, withdrawal_date, amount, employee_name, description || null, transaction_id || null]
         );
 
         reply.send({ success: true, data: result.rows[0] });
