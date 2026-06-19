@@ -66,7 +66,8 @@ export default async function cashFlowRoutes(fastify, options) {
 
       queryText += `
         GROUP BY cf.id, cf.owner_id, o.name, cf.withdrawal_date, cf.amount,
-                 cf.employee_name, cf.description, cf.status, cf.created_at, cf.updated_at
+                 cf.employee_name, cf.description, cf.status, cf.created_at, cf.updated_at,
+                 cf.transaction_id, t.date, t.description, t.amount
         ORDER BY cf.withdrawal_date DESC, cf.created_at DESC
       `;
 
