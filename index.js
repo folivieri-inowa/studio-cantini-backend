@@ -45,7 +45,7 @@ import {
   CategoryExclusionRoutes,
   VehiclesRoutes,
   CashFlowRoutes,
-  // GroupsRoutes, // Disabled - using consultative approach in report.js
+  GroupsRoutes,
 } from './routes/index.js';
 // Migrazione database
 import { runMigrations } from './lib/migrations.js';
