@@ -290,8 +290,8 @@ export default async function cashFlowRoutes(fastify, options) {
 
         const currentStatus = current.rows[0].status;
         const allowedFields = currentStatus === 'open'
-          ? ['owner_id', 'withdrawal_date', 'amount', 'employee_name', 'description']
-          : ['description'];
+          ? ['owner_id', 'withdrawal_date', 'amount', 'employee_name', 'description', 'transaction_id']
+          : ['description', 'transaction_id'];
 
         // Build SET clause dynamically
         const setClauses = [];
