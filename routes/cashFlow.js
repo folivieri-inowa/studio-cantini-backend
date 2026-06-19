@@ -133,6 +133,14 @@ export default async function cashFlowRoutes(fastify, options) {
           return reply.status(404).send({ success: false, error: 'Prelievo non trovato' });
         }
 
+        // Global totals for pool model
+        const globalResult = await client.query(
+          `SELECT
+             COALESCE(SUM(amount), 0) AS global_withdrawals,
+             COALESCE((SELECT SUM(amount) FROM cash_flow_expenses), 0) AS global_spent
+           FROM cash_flow`
+        );
+
         // Fetch expenses for this withdrawal
         const expensesResult = await client.query(
           `SELECT
@@ -187,6 +195,9 @@ export default async function cashFlowRoutes(fastify, options) {
           data: {
             ...headerResult.rows[0],
             expenses,
+            global_withdrawals: parseFloat(globalResult.rows[0].global_withdrawals),
+            global_spent: parseFloat(globalResult.rows[0].global_spent),
+            global_remaining: parseFloat(globalResult.rows[0].global_withdrawals) - parseFloat(globalResult.rows[0].global_spent),
           },
         });
       } finally {
