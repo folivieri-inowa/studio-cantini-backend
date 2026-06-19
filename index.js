@@ -103,7 +103,7 @@ fastify.register(ArchiveRoutes, { prefix: '/v1/archive' })
 fastify.register(CategoryExclusionRoutes, { prefix: '/v1/category-exclusion' })
 fastify.register(VehiclesRoutes, { prefix: '/v1/vehicles' })
 fastify.register(CashFlowRoutes, { prefix: '/v1/cash-flow' })
-// fastify.register(GroupsRoutes, { prefix: '/v1/groups' }) // Disabled - using consultative approach in report.js
+fastify.register(GroupsRoutes, { prefix: '/v1/groups' })
 // fastify.register(SetupRoutes, { prefix: '/v1/setup' })
 // fastify.register(MLAnalysisRoutes, { prefix: '/v1/ml-analysis' })
 
