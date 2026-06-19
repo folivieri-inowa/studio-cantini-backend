@@ -133,12 +133,19 @@ export default async function cashFlowRoutes(fastify, options) {
           return reply.status(404).send({ success: false, error: 'Prelievo non trovato' });
         }
 
-        // Global totals for pool model
+        // Global totals for pool model — sum per-row remaining_balance
+        // (same calculation as the KPI cards on the list view)
         const globalResult = await client.query(
           `SELECT
-             COALESCE(SUM(amount), 0) AS global_withdrawals,
-             COALESCE((SELECT SUM(amount) FROM cash_flow_expenses), 0) AS global_spent
-           FROM cash_flow`
+             COALESCE(SUM(cf.amount), 0) AS global_withdrawals,
+             COALESCE(SUM(COALESCE(cfe_spent.total, 0)), 0) AS global_spent
+           FROM cash_flow cf
+           LEFT JOIN (
+             SELECT cash_flow_id, SUM(amount) AS total
+             FROM cash_flow_expenses
+             WHERE cash_flow_id IS NOT NULL
+             GROUP BY cash_flow_id
+           ) cfe_spent ON cfe_spent.cash_flow_id = cf.id`
         );
 
         // Fetch expenses for this withdrawal
