@@ -431,9 +431,6 @@ export default async function cashFlowRoutes(fastify, options) {
     try {
       const { cash_flow_id, expense_date, amount, category, description, recipient } = request.body;
 
-      if (!cash_flow_id) {
-        return reply.status(400).send({ success: false, error: 'Il campo cash_flow_id è obbligatorio' });
-      }
       if (!expense_date) {
         return reply.status(400).send({ success: false, error: 'Il campo expense_date è obbligatorio' });
       }
@@ -443,29 +440,29 @@ export default async function cashFlowRoutes(fastify, options) {
 
       const client = await fastify.pg.pool.connect();
       try {
-        // Validate that parent withdrawal exists and get its amount
-        const parentResult = await client.query(
-          `SELECT id, amount, status FROM cash_flow WHERE id = $1`,
-          [cash_flow_id]
-        );
-
-        if (parentResult.rows.length === 0) {
-          return reply.status(404).send({ success: false, error: 'Prelievo non trovato' });
+        // If linked to a withdrawal, validate it exists
+        if (cash_flow_id) {
+          const parentResult = await client.query(
+            `SELECT id FROM cash_flow WHERE id = $1`,
+            [cash_flow_id]
+          );
+          if (parentResult.rows.length === 0) {
+            return reply.status(404).send({ success: false, error: 'Prelievo non trovato' });
+          }
         }
 
-        // Check that the new total does not exceed the withdrawal amount
-        const spentResult = await client.query(
-          `SELECT COALESCE(SUM(amount), 0) AS current_total FROM cash_flow_expenses WHERE cash_flow_id = $1`,
-          [cash_flow_id]
+        // Global constraint: total expenses cannot exceed total withdrawals
+        const totalWithdrawals = await client.query(
+          `SELECT COALESCE(SUM(amount), 0) AS total FROM cash_flow`
         );
-        const currentTotal = parseFloat(spentResult.rows[0].current_total);
-        const newAmount = parseFloat(amount);
-        const withdrawalAmount = parseFloat(parentResult.rows[0].amount);
-
-        if (currentTotal + newAmount > withdrawalAmount) {
+        const totalSpent = await client.query(
+          `SELECT COALESCE(SUM(amount), 0) AS total FROM cash_flow_expenses`
+        );
+        const newTotal = parseFloat(totalSpent.rows[0].total) + parseFloat(amount);
+        if (newTotal > parseFloat(totalWithdrawals.rows[0].total)) {
           return reply.status(400).send({
             success: false,
-            error: 'Il totale delle spese supererebbe l\'importo del prelievo',
+            error: 'Il totale delle spese supererebbe il totale dei prelievi',
           });
         }
 
@@ -481,7 +478,7 @@ export default async function cashFlowRoutes(fastify, options) {
              description,
              recipient,
              to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at`,
-          [cash_flow_id, expense_date, amount, category || null, description || null, recipient || null]
+          [cash_flow_id || null, expense_date, amount, category || null, description || null, recipient || null]
         );
 
         reply.send({ success: true, data: result.rows[0] });
