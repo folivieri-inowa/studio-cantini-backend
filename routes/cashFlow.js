@@ -216,10 +216,6 @@ export default async function cashFlowRoutes(fastify, options) {
       if (amount === undefined || amount === null || amount === '') {
         return reply.status(400).send({ success: false, error: 'Il campo amount è obbligatorio' });
       }
-      if (!employee_name) {
-        return reply.status(400).send({ success: false, error: 'Il campo employee_name è obbligatorio' });
-      }
-
       const client = await fastify.pg.pool.connect();
       try {
         const result = await client.query(
@@ -235,7 +231,7 @@ export default async function cashFlowRoutes(fastify, options) {
              status,
              to_char(created_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS created_at,
              to_char(updated_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS updated_at`,
-          [owner_id, withdrawal_date, amount, employee_name, description || null, transaction_id || null]
+          [owner_id, withdrawal_date, amount, employee_name || null, description || null, transaction_id || null]
         );
 
         reply.send({ success: true, data: result.rows[0] });
