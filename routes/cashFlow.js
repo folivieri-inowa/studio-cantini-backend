@@ -469,18 +469,27 @@ export default async function cashFlowRoutes(fastify, options) {
           }
         }
 
-        // Global constraint: total expenses cannot exceed total withdrawals
-        const totalWithdrawals = await client.query(
-          `SELECT COALESCE(SUM(amount), 0) AS total FROM cash_flow`
+        // Global constraint (pool model): sum of all linked expenses <= sum of all withdrawals
+        // Uses the same calculation as the KPI / details global_remaining
+        const totals = await client.query(
+          `SELECT
+             COALESCE(SUM(cf.amount), 0) AS total_withdrawals,
+             COALESCE(SUM(COALESCE(cfe_spent.total, 0)), 0) AS total_linked_spent
+           FROM cash_flow cf
+           LEFT JOIN (
+             SELECT cash_flow_id, SUM(amount) AS total
+             FROM cash_flow_expenses
+             WHERE cash_flow_id IS NOT NULL
+             GROUP BY cash_flow_id
+           ) cfe_spent ON cfe_spent.cash_flow_id = cf.id`
         );
-        const totalSpent = await client.query(
-          `SELECT COALESCE(SUM(amount), 0) AS total FROM cash_flow_expenses`
-        );
-        const newTotal = parseFloat(totalSpent.rows[0].total) + parseFloat(amount);
-        if (newTotal > parseFloat(totalWithdrawals.rows[0].total)) {
+        const totalWithdrawals = parseFloat(totals.rows[0].total_withdrawals);
+        const totalLinkedSpent = parseFloat(totals.rows[0].total_linked_spent);
+        const newTotal = totalLinkedSpent + parseFloat(amount);
+        if (newTotal > totalWithdrawals) {
           return reply.status(400).send({
             success: false,
-            error: 'Il totale delle spese supererebbe il totale dei prelievi',
+            error: `Il totale delle spese supererebbe il totale dei prelievi (disponibile: €${(totalWithdrawals - totalLinkedSpent).toFixed(2).replace('.', ',')})`,
           });
         }
 
