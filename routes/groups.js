@@ -10,17 +10,46 @@ async function groupsRoutes(fastify, options) {
       const { db } = request.query;
       if (!db) return reply.status(400).send({ error: 'Database parameter is required' });
 
-      const query = `
-        SELECT g.id, g.name, g.db, g.created_at, g.updated_at,
-               COUNT(gi.id)::int AS items_count
+      // Fetch groups with their items (category associations)
+      const groupsQuery = `
+        SELECT g.id, g.name, g.db, g.created_at, g.updated_at
         FROM groups g
-        LEFT JOIN group_items gi ON g.id = gi.group_id
         WHERE g.db = $1
-        GROUP BY g.id
         ORDER BY g.name ASC
       `;
-      const result = await fastify.pg.query(query, [db]);
-      reply.send({ success: true, data: result.rows });
+      const groupsResult = await fastify.pg.query(groupsQuery, [db]);
+      const groups = groupsResult.rows;
+
+      // Fetch all items for all groups in one query
+      if (groups.length > 0) {
+        const groupIds = groups.map(g => g.id);
+        const itemsQuery = `
+          SELECT gi.group_id, gi.id AS item_id, gi.category_id, c.name AS category_name
+          FROM group_items gi
+          LEFT JOIN categories c ON gi.category_id = c.id
+          WHERE gi.group_id = ANY($1::int[])
+          ORDER BY c.name ASC
+        `;
+        const itemsResult = await fastify.pg.query(itemsQuery, [groupIds]);
+
+        // Merge items into groups
+        const itemsByGroup = {};
+        itemsResult.rows.forEach(row => {
+          if (!itemsByGroup[row.group_id]) itemsByGroup[row.group_id] = [];
+          itemsByGroup[row.group_id].push({
+            id: row.item_id,
+            category_id: row.category_id,
+            category_name: row.category_name,
+          });
+        });
+
+        groups.forEach(g => {
+          g.items = itemsByGroup[g.id] || [];
+          g.items_count = g.items.length;
+        });
+      }
+
+      reply.send({ success: true, data: groups });
     } catch (error) {
       console.error('Error fetching groups:', error);
       reply.status(500).send({ error: 'Internal server error' });
