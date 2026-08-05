@@ -535,16 +535,16 @@ export default async function vehiclesRoutes(fastify, options) {
         return reply.status(400).send({ error: 'Campi obbligatori: vehicle_id, tire_type' });
       }
 
-      const { vehicle_id, tire_type, brand, model, size_front, size_rear, install_date, mileage_at_install, storage_location, condition, notes } = tire;
+      const { vehicle_id, tire_type, brand, model, size, install_date, mileage_at_install, storage_location, condition, notes } = tire;
 
       const client = await fastify.pg.pool.connect();
       try {
         const result = await client.query(
           `INSERT INTO vehicle_tires
-            (vehicle_id, tire_type, brand, model, size_front, size_rear, install_date, mileage_at_install, storage_location, condition, notes)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            (vehicle_id, tire_type, brand, model, size, install_date, mileage_at_install, storage_location, condition, notes)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
            RETURNING *`,
-          [vehicle_id, tire_type, brand || null, model || null, size_front || null, size_rear || null, install_date || null, mileage_at_install || null, storage_location || null, condition || null, notes || null]
+          [vehicle_id, tire_type, brand || null, model || null, size || null, install_date || null, mileage_at_install || null, storage_location || null, condition || null, notes || null]
         );
         reply.send({ data: result.rows[0], success: true });
       } finally {
@@ -562,7 +562,7 @@ export default async function vehiclesRoutes(fastify, options) {
       const { id, tire } = request.body;
       if (!id || !tire) return reply.status(400).send({ error: 'ID o dati non specificati' });
 
-      const fields = ['tire_type', 'brand', 'model', 'size_front', 'size_rear', 'install_date', 'mileage_at_install', 'storage_location', 'condition', 'notes'];
+      const fields = ['tire_type', 'brand', 'model', 'size', 'install_date', 'mileage_at_install', 'storage_location', 'condition', 'notes'];
       const setClauses = [];
       const queryParams = [id];
       let paramIndex = 2;
@@ -1009,7 +1009,7 @@ export default async function vehiclesRoutes(fastify, options) {
       const result = await client.query(
         `SELECT id, vehicle_id, violation_number, issuing_authority, violation_type,
                 to_char(fine_date, 'YYYY-MM-DD') AS fine_date,
-                amount, discount_amount, paid_discounted,
+                amount, discount_amount,
                 to_char(due_date, 'YYYY-MM-DD') AS due_date,
                 to_char(paid_date, 'YYYY-MM-DD') AS paid_date,
                 payment_method, status, appeal_notes, notes,
@@ -1027,13 +1027,13 @@ export default async function vehiclesRoutes(fastify, options) {
     if (!fine?.vehicle_id || !fine?.fine_date) {
       return reply.status(400).send({ error: 'Campi obbligatori: vehicle_id, fine_date' });
     }
-    const { vehicle_id, fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, paid_discounted, due_date, paid_date, payment_method, status = 'da_pagare', appeal_notes, notes } = fine;
+    const { vehicle_id, fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, due_date, paid_date, payment_method, status = 'da_pagare', appeal_notes, notes } = fine;
     const client = await fastify.pg.pool.connect();
     try {
       const result = await client.query(
-        `INSERT INTO vehicle_fines (vehicle_id, fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, paid_discounted, due_date, paid_date, payment_method, status, appeal_notes, notes)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,
-        [vehicle_id, fine_date, violation_number, issuing_authority, violation_type, amount || 0, discount_amount, paid_discounted || false, due_date, paid_date, payment_method, status, appeal_notes, notes]
+        `INSERT INTO vehicle_fines (vehicle_id, fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, due_date, paid_date, payment_method, status, appeal_notes, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+        [vehicle_id, fine_date, violation_number, issuing_authority, violation_type, amount || 0, discount_amount, due_date, paid_date, payment_method, status, appeal_notes, notes]
       );
       reply.send({ id: result.rows[0].id });
     } finally { client.release(); }
@@ -1043,15 +1043,15 @@ export default async function vehiclesRoutes(fastify, options) {
   fastify.post('/fines/update', { preHandler }, async (request, reply) => {
     const { id, fine } = request.body;
     if (!id) return reply.status(400).send({ error: 'id obbligatorio' });
-    const { fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, paid_discounted, due_date, paid_date, payment_method, status, appeal_notes, notes } = fine;
+    const { fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, due_date, paid_date, payment_method, status, appeal_notes, notes } = fine;
     const client = await fastify.pg.pool.connect();
     try {
       await client.query(
         `UPDATE vehicle_fines SET fine_date=$1, violation_number=$2, issuing_authority=$3, violation_type=$4,
-         amount=$5, discount_amount=$6, paid_discounted=$7, due_date=$8, paid_date=$9, payment_method=$10,
-         status=$11, appeal_notes=$12, notes=$13, updated_at=NOW()
-         WHERE id=$14`,
-        [fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, paid_discounted || false, due_date, paid_date, payment_method, status, appeal_notes, notes, id]
+         amount=$5, discount_amount=$6, due_date=$7, paid_date=$8, payment_method=$9,
+         status=$10, appeal_notes=$11, notes=$12, updated_at=NOW()
+         WHERE id=$13`,
+        [fine_date, violation_number, issuing_authority, violation_type, amount, discount_amount, due_date, paid_date, payment_method, status, appeal_notes, notes, id]
       );
       reply.send({ success: true });
     } finally { client.release(); }
